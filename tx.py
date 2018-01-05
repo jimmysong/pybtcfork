@@ -20,13 +20,12 @@ from script import Script
 
 class Tx:
 
-    def __init__(self, version, tx_ins, tx_outs, locktime, testnet=False, prev_block_hash=b''):
+    def __init__(self, version, tx_ins, tx_outs, locktime, testnet=False):
         self.version = version
         self.tx_ins = tx_ins
         self.tx_outs = tx_outs
         self.locktime = locktime
         self.testnet = testnet
-        self.prev_block_hash = prev_block_hash
         self._hash_prevouts = None
         self._hash_sequence = None
         self._hash_outputs = None
@@ -48,19 +47,15 @@ class Tx:
 
     def hash(self):
         return double_sha256(self.serialize())[::-1]
-    
+
     @classmethod
-    def parse(cls, s, prev_block=False):
+    def parse(cls, s):
         '''Takes a byte stream and parses the transaction at the start
         return a Tx object
         '''
         # s.read(n) will return n bytes
         # version has 4 bytes, little-endian, interpret as int
         version = little_endian_to_int(s.read(4))
-        if prev_block:
-            prev_block_hash = s.read(32)[::-1]
-        else:
-            prev_block_hash = None
         # num_inputs is a varint, use read_varint(s)
         num_inputs = read_varint(s)
         # each input needs parsing
@@ -76,14 +71,12 @@ class Tx:
         # locktime is 4 bytes, little-endian
         locktime = little_endian_to_int(s.read(4))
         # return an instance of the class (cls(...))
-        return cls(version, inputs, outputs, locktime, prev_block_hash=prev_block_hash)
+        return cls(version, inputs, outputs, locktime)
 
-    def serialize(self, prev_block=False):
+    def serialize(self):
         '''Returns the byte serialization of the transaction'''
         # serialize version (4 bytes, little endian)
         result = int_to_little_endian(self.version, 4)
-        if prev_block:
-            result += self.prev_block_hash[::-1]
         # encode_varint on the number of inputs
         result += encode_varint(len(self.tx_ins))
         # iterate inputs
@@ -138,15 +131,13 @@ class Tx:
                 all_outputs += tx_out.serialize()
             self._hash_outputs = double_sha256(all_outputs)
         return self._hash_outputs
-    
-    def sig_hash_bip143(self, input_index, hash_type, prev_block=False, sbtc=False):
+
+    def sig_hash_bip143(self, input_index, hash_type):
         '''Returns the integer representation of the hash that needs to get
         signed for index input_index'''
         tx_in = self.tx_ins[input_index]
         # per BIP143 spec
         s = int_to_little_endian(self.version, 4)
-        if prev_block:
-            s += self.prev_block_hash[::-1]
         s += self.hash_prevouts() + self.hash_sequence()
         s += tx_in.prev_tx[::-1] + int_to_little_endian(tx_in.prev_index, 4)
         ser = tx_in.script_pubkey()
@@ -156,11 +147,256 @@ class Tx:
         s += self.hash_outputs()
         s += int_to_little_endian(self.locktime, 4)
         s += int_to_little_endian(hash_type, 4)
-        if sbtc:
-            s += b'sbtc'
         return int.from_bytes(double_sha256(s), 'big')
-    
-    def sig_hash(self, input_index, hash_type, prev_block=False, sbtc=False):
+
+    def sig_hash(self, input_index, hash_type):
+        '''Returns the integer representation of the hash that needs to get
+        signed for index input_index'''
+        # create a transaction serialization where
+        # all the input script_sigs are blanked out
+        alt_tx_ins = []
+        for tx_in in self.tx_ins:
+            alt_tx_ins.append(TxIn(
+                prev_tx=tx_in.prev_tx,
+                prev_index=tx_in.prev_index,
+                script_sig=b'',
+                sequence=tx_in.sequence,
+                value=tx_in.value(),
+                script_pubkey=tx_in.script_pubkey(),
+            ))
+        # replace the input's scriptSig with the scriptPubKey
+        signing_input = alt_tx_ins[input_index]
+        script_pubkey = signing_input.script_pubkey(self.testnet)
+        sig_type = script_pubkey.type()
+        if sig_type == 'p2pkh':
+            signing_input.script_sig = script_pubkey
+        elif sig_type == 'p2sh':
+            current_input = self.tx_ins[input_index]
+            signing_input.script_sig = Script.parse(
+                current_input.redeem_script())
+        else:
+            raise RuntimeError('no valid sig_type')
+        alt_tx = self.__class__(
+            version=self.version,
+            tx_ins=alt_tx_ins,
+            tx_outs=self.tx_outs,
+            locktime=self.locktime,
+        )
+        # add the hash_type
+        result = alt_tx.serialize()
+        result += int_to_little_endian(hash_type, 4)
+        return int.from_bytes(double_sha256(result), 'big')
+
+    def verify_input(self, input_index):
+        '''Returns whether the input has a valid signature'''
+        # get the relevant input
+        tx_in = self.tx_ins[input_index]
+        # get the number of signatures required. This is available in tx_in.script_sig.num_sigs_required()
+        sigs_required = tx_in.script_sig.num_sigs_required()
+        # iterate over the sigs required and check each signature
+        for sig_num in range(sigs_required):
+            # get the point from the sec format
+            # get the sec_pubkey at current signature index
+            point = S256Point.parse(tx_in.sec_pubkey(index=sig_num))
+            # get the der sig and hash_type from input
+            # get the der_signature at current signature index
+            der, hash_type = tx_in.der_signature(index=sig_num)
+            # get the signature from der format
+            signature = Signature.parse(der)
+            # get the hash to sign
+            z = self.sig_hash(input_index, hash_type)
+            # use point.verify on the hash to sign and signature
+            if not point.verify(z, signature):
+                return False
+        return True
+
+    def sign_input(self, input_index, private_key, hash_type, compressed=True):
+        '''Signs the input using the private key'''
+        # get the hash to sign
+        z = self.sig_hash(input_index, hash_type)
+        # get der signature of z from private key
+        der = private_key.sign(z).der()
+        # append the hash_type to der (use bytes([hash_type]))
+        sig = der + bytes([hash_type])
+        # calculate the sec
+        sec = private_key.point.sec(compressed=compressed)
+        # initialize a new script with [sig, sec] as the elements
+        script_sig = Script([sig, sec])
+        # change input's script_sig to new script
+        self.tx_ins[input_index].script_sig = script_sig
+        # return whether sig is valid using self.verify_input
+        return self.verify_input(input_index)
+
+    def is_coinbase(self):
+        '''Returns whether this transaction is a coinbase transaction or not'''
+        # check that there is exactly 1 input
+        if len(self.tx_ins) != 1:
+            return False
+        # grab the first input
+        first_input = self.tx_ins[0]
+        # check that first input prev_tx is b'\x00' * 32 bytes
+        if first_input.prev_tx != b'\x00' * 32:
+            return False
+        # check that first input prev_index is 0xffffffff
+        if first_input.prev_index != 0xffffffff:
+            return False
+        return True
+
+    def coinbase_height(self):
+        '''Returns the height of the block this coinbase transaction is in
+        Returns None if this transaction is not a coinbase transaction
+        '''
+        # if this is NOT a coinbase transaction, return None
+        if not self.is_coinbase():
+            return None
+        # grab the first input
+        first_input = self.tx_ins[0]
+        # grab the first element of the script_sig (.script_sig.elements[0])
+        first_element = first_input.script_sig.elements[0]
+        # convert the first element from little endian to int
+        return little_endian_to_int(first_element)
+
+    def verify(self):
+        for i in range(len(self.tx_ins)):
+            if not self.verify_input(i):
+                return False
+        return True
+
+    def sign(self, private_key, compressed=True):
+        hash_type = SIGHASH_ALL
+        for i in range(len(self.tx_ins)):
+            if not self.sign_input(i, private_key, hash_type, compressed=compressed):
+                raise RuntimeError('signing failed')
+
+
+class BCHTx(Tx):
+
+    fork_id = 0
+
+    def verify_input(self, input_index):
+        '''Returns whether the input has a valid signature'''
+        # get the relevant input
+        tx_in = self.tx_ins[input_index]
+        # get the number of signatures required. This is available in tx_in.script_sig.num_sigs_required()
+        sigs_required = tx_in.script_sig.num_sigs_required()
+        # iterate over the sigs required and check each signature
+        for sig_num in range(sigs_required):
+            # get the point from the sec format
+            # get the sec_pubkey at current signature index
+            point = S256Point.parse(tx_in.sec_pubkey(index=sig_num))
+            # get the der sig and hash_type from input
+            # get the der_signature at current signature index
+            der, hash_type = tx_in.der_signature(index=sig_num)
+            # get the signature from der format
+            signature = Signature.parse(der)
+            # get the hash to sign
+            z = self.sig_hash_bip143(input_index, hash_type)
+            # use point.verify on the hash to sign and signature
+            if not point.verify(z, signature):
+                return False
+        return True
+
+    def sign_input(self, input_index, private_key, hash_type, compressed=True):
+        '''Signs the input using the private key'''
+        # get the hash to sign
+        z = self.sig_hash_bip143(input_index, hash_type|self.fork_id)
+        # get der signature of z from private key
+        der = private_key.sign(z).der()
+        # append the hash_type to der (use bytes([hash_type]))
+        sig = der + bytes([hash_type])
+        # calculate the sec
+        sec = private_key.point.sec(compressed=compressed)
+        # initialize a new script with [sig, sec] as the elements
+        script_sig = Script([sig, sec])
+        # change input's script_sig to new script
+        self.tx_ins[input_index].script_sig = script_sig
+        # return whether sig is valid using self.verify_input
+        return self.verify_input(input_index)
+
+    def sign(self, private_key, compressed=True):
+        hash_type = SIGHASH_ALL
+        for i in range(len(self.tx_ins)):
+            if not self.sign_input(i, private_key, 0x40|hash_type, compressed=compressed):
+                raise RuntimeError('signing failed')
+
+
+class BTGTx(BCHTx):
+
+    fork_id = 79 << 8
+
+
+class BCDTx(Tx):
+
+    def __init__(self, version, tx_ins, tx_outs, locktime, testnet=False, prev_block_hash=b''):
+        super().__init__(self, version, tx_ins, tx_outs, locktime, testnet)
+        self.prev_block_hash = prev_block_hash
+
+    @classmethod
+    def parse(cls, s):
+        '''Takes a byte stream and parses the transaction at the start
+        return a Tx object
+        '''
+        # s.read(n) will return n bytes
+        # version has 4 bytes, little-endian, interpret as int
+        version = little_endian_to_int(s.read(4))
+        prev_block_hash = s.read(32)[::-1]
+        # num_inputs is a varint, use read_varint(s)
+        num_inputs = read_varint(s)
+        # each input needs parsing
+        inputs = []
+        for _ in range(num_inputs):
+            inputs.append(TxIn.parse(s))
+        # num_outputs is a varint, use read_varint(s)
+        num_outputs = read_varint(s)
+        # each output needs parsing
+        outputs = []
+        for _ in range(num_outputs):
+            outputs.append(TxOut.parse(s))
+        # locktime is 4 bytes, little-endian
+        locktime = little_endian_to_int(s.read(4))
+        # return an instance of the class (cls(...))
+        return cls(version, inputs, outputs, locktime, prev_block_hash=prev_block_hash)
+
+    def serialize(self):
+        '''Returns the byte serialization of the transaction'''
+        # serialize version (4 bytes, little endian)
+        result = int_to_little_endian(self.version, 4)
+        result += self.prev_block_hash[::-1]
+        # encode_varint on the number of inputs
+        result += encode_varint(len(self.tx_ins))
+        # iterate inputs
+        for tx_in in self.tx_ins:
+            # serialize each input
+            result += tx_in.serialize()
+        # encode_varint on the number of inputs
+        result += encode_varint(len(self.tx_outs))
+        # iterate outputs
+        for tx_out in self.tx_outs:
+            # serialize each output
+            result += tx_out.serialize()
+        # serialize locktime (4 bytes, little endian)
+        result += int_to_little_endian(self.locktime, 4)
+        return result
+
+    def sig_hash_bip143(self, input_index, hash_type):
+        '''Returns the integer representation of the hash that needs to get
+        signed for index input_index'''
+        tx_in = self.tx_ins[input_index]
+        # per BIP143 spec
+        s = int_to_little_endian(self.version, 4)
+        s += self.prev_block_hash[::-1]
+        s += self.hash_prevouts() + self.hash_sequence()
+        s += tx_in.prev_tx[::-1] + int_to_little_endian(tx_in.prev_index, 4)
+        ser = tx_in.script_pubkey()
+        s += bytes([len(ser)]) + ser # script pubkey
+        s += int_to_little_endian(tx_in.value(), 8)
+        s += int_to_little_endian(tx_in.sequence, 4)
+        s += self.hash_outputs()
+        s += int_to_little_endian(self.locktime, 4)
+        s += int_to_little_endian(hash_type, 4)
+        return int.from_bytes(double_sha256(s), 'big')
+
+    def sig_hash(self, input_index, hash_type):
         '''Returns the integer representation of the hash that needs to get
         signed for index input_index'''
         # create a transaction serialization where
@@ -195,101 +431,77 @@ class Tx:
             prev_block_hash=self.prev_block_hash,
         )
         # add the hash_type
-        result = alt_tx.serialize(prev_block=prev_block)
+        result = alt_tx.serialize()
         result += int_to_little_endian(hash_type, 4)
-        if sbtc:
-            result += b'\x04sbtc'
         return int.from_bytes(double_sha256(result), 'big')
 
-    def verify_input(self, input_index, fork_id=0, bip143=False, prev_block=False, sbtc=False):
-        '''Returns whether the input has a valid signature'''
-        # Exercise 1.1: get the relevant input
+
+class SBTCTx(Tx):
+    sighash_append = b'\x04sbtc'
+
+    def sig_hash_bip143(self, input_index, hash_type):
+        '''Returns the integer representation of the hash that needs to get
+        signed for index input_index'''
         tx_in = self.tx_ins[input_index]
-        # Exercise 6.2: get the number of signatures required. This is available in tx_in.script_sig.num_sigs_required()
-        sigs_required = tx_in.script_sig.num_sigs_required()
-        # Exercise 6.2: iterate over the sigs required and check each signature
-        for sig_num in range(sigs_required):
-            # Exercise 1.1: get the point from the sec format (tx_in.sec_pubkey())
-            # Exercise 6.2: get the sec_pubkey at current signature index (check sec_pubkey function)
-            point = S256Point.parse(tx_in.sec_pubkey(index=sig_num))
-            # Exercise 1.1: get the der sig and hash_type from input
-            # Exercise 6.2: get the der_signature at current signature index (check der_signature function)
-            der, hash_type = tx_in.der_signature(index=sig_num)
-            # Exercise 1.1: get the signature from der format
-            signature = Signature.parse(der)
-            # Exercise 1.1: get the hash to sign
-            if bip143:
-                z = self.sig_hash_bip143(input_index, hash_type|fork_id, prev_block=prev_block, sbtc=sbtc)
-            else:
-                z = self.sig_hash(input_index, hash_type|fork_id, prev_block=prev_block, sbtc=sbtc)
-            # Exercise 1.1: use point.verify on the hash to sign and signature
-            if not point.verify(z, signature):
-                return False
-        return True
+        # per BIP143 spec
+        s = int_to_little_endian(self.version, 4)
+        s += self.hash_prevouts() + self.hash_sequence()
+        s += tx_in.prev_tx[::-1] + int_to_little_endian(tx_in.prev_index, 4)
+        ser = tx_in.script_pubkey()
+        s += bytes([len(ser)]) + ser # script pubkey
+        s += int_to_little_endian(tx_in.value(), 8)
+        s += int_to_little_endian(tx_in.sequence, 4)
+        s += self.hash_outputs()
+        s += int_to_little_endian(self.locktime, 4)
+        s += int_to_little_endian(hash_type, 4)
+        s += self.sighash_append
+        return int.from_bytes(double_sha256(s), 'big')
 
-    def sign_input(self, input_index, private_key, hash_type, compressed=True, fork_id=0, prev_block=False, sbtc=False, bip143=False):
-        '''Signs the input using the private key'''
-        # get the hash to sign
-        if bip143:
-            z = self.sig_hash_bip143(input_index, hash_type|fork_id, prev_block=prev_block, sbtc=sbtc)
+    def sig_hash(self, input_index, hash_type):
+        '''Returns the integer representation of the hash that needs to get
+        signed for index input_index'''
+        # create a transaction serialization where
+        # all the input script_sigs are blanked out
+        alt_tx_ins = []
+        for tx_in in self.tx_ins:
+            alt_tx_ins.append(TxIn(
+                prev_tx=tx_in.prev_tx,
+                prev_index=tx_in.prev_index,
+                script_sig=b'',
+                sequence=tx_in.sequence,
+                value=tx_in.value(),
+                script_pubkey=tx_in.script_pubkey(),
+            ))
+        # replace the input's scriptSig with the scriptPubKey
+        signing_input = alt_tx_ins[input_index]
+        script_pubkey = signing_input.script_pubkey(self.testnet)
+        sig_type = script_pubkey.type()
+        if sig_type == 'p2pkh':
+            signing_input.script_sig = script_pubkey
+        elif sig_type == 'p2sh':
+            current_input = self.tx_ins[input_index]
+            signing_input.script_sig = Script.parse(
+                current_input.redeem_script())
         else:
-            z = self.sig_hash(input_index, hash_type|fork_id, prev_block=prev_block, sbtc=sbtc)
-        # get der signature of z from private key
-        der = private_key.sign(z).der()
-        # append the hash_type to der (use bytes([hash_type]))
-        sig = der + bytes([hash_type])
-        # calculate the sec
-        sec = private_key.point.sec(compressed=compressed)
-        # initialize a new script with [sig, sec] as the elements
-        script_sig = Script([sig, sec])
-        # change input's script_sig to new script
-        self.tx_ins[input_index].script_sig = script_sig
-        # return whether sig is valid using self.verify_input
-        return self.verify_input(input_index, fork_id=fork_id, bip143=bip143, prev_block=prev_block, sbtc=sbtc)
+            raise RuntimeError('no valid sig_type')
+        alt_tx = self.__class__(
+            version=self.version,
+            tx_ins=alt_tx_ins,
+            tx_outs=self.tx_outs,
+            locktime=self.locktime,
+        )
+        # add the hash_type
+        result = alt_tx.serialize()
+        result += int_to_little_endian(hash_type, 4)
+        result += self.sighash_append
+        return int.from_bytes(double_sha256(result), 'big')
 
-    def is_coinbase(self):
-        '''Returns whether this transaction is a coinbase transaction or not'''
-        # check that there is exactly 1 input
-        if len(self.tx_ins) != 1:
-            return False
-        # grab the first input
-        first_input = self.tx_ins[0]
-        # check that first input prev_tx is b'\x00' * 32 bytes
-        if first_input.prev_tx != b'\x00' * 32:
-            return False
-        # check that first input prev_index is 0xffffffff
-        if first_input.prev_index != 0xffffffff:
-            return False
-        return True
-
-    def coinbase_height(self):
-        '''Returns the height of the block this coinbase transaction is in
-        Returns None if this transaction is not a coinbase transaction
-        '''
-        # if this is NOT a coinbase transaction, return None
-        if not self.is_coinbase():
-            return None
-        # grab the first input
-        first_input = self.tx_ins[0]
-        # grab the first element of the script_sig (.script_sig.elements[0])
-        first_element = first_input.script_sig.elements[0]
-        # convert the first element from little endian to int
-        return little_endian_to_int(first_element)
-
-    def verify(self, fork_id=0, bip143=False, prev_block=False, sbtc=False):
+    def sign(self, private_key, compressed=True):
+        hash_type = 0x40|SIGHASH_ALL
         for i in range(len(self.tx_ins)):
-            if not self.verify_input(i, fork_id=fork_id, bip143=bip143, prev_block=prev_block, sbtc=sbtc):
-                return False
-        return True
-
-    def sign(self, private_key, compressed=True, fork_id=0, bip143=False, prev_block=False, sbtc=False, fork=False):
-        if fork:
-            hash_type = 0x40|SIGHASH_ALL
-        else:
-            hash_type = SIGHASH_ALL
-        for i in range(len(self.tx_ins)):
-            if not self.sign_input(i, private_key, hash_type, compressed=compressed, fork_id=fork_id, bip143=bip143, prev_block=prev_block, sbtc=sbtc):
+            if not self.sign_input(i, private_key, hash_type, compressed=compressed):
                 raise RuntimeError('signing failed')
+
 
 
 class TxIn:
@@ -309,7 +521,7 @@ class TxIn:
 
     def __repr__(self):
         return '{}:{}'.format(hexlify(self.prev_tx).decode('ascii'), self.prev_index)
-        
+
     @classmethod
     def parse(cls, s):
         '''Takes a byte stream and parses the tx_input at the start
@@ -627,7 +839,7 @@ class TxTest(TestCase):
         self.assertTrue(point.verify(z,sig))
         self.assertTrue(tx.verify_input(0))
         self.assertTrue(tx.verify())
- 
+
         raw_tx = unhexlify('01000000066f267f335a54abf404c66a7a6e9ed3d77566a09ce11632f57029a677f42c6095000000006b483045022100fb0b16699c9b0984345c7860e208c04694aaa5117c8306082cfafc58b53e489a02203cd53408f1f8c8ff29701a9d1f6960b2dc5e1039f0eea949c5a886ac367e1e38412102fdcae0e5a55b20c8d3cbdf451d39f6d47daa50f884ed0ffcf0ae0adfeec4abb9ffffffff4ceb6a2894b19b96fedd543750bf7307805a2f6ca189c8c42d1abbe2930235fa000000006a4730440220794c269d519b567aa694de6dcde1d09dffa30b69dc18a619ce9ea65f239899150220156394f70f405c0710851490b9f21dc8a23931fbdc8a70ea51f73e9b00274a5c412103b708cd0b3329cff03611b0155384d1d4f40cb3aa30f82d8f4a34da044c868058ffffffff15053ac5123a25e0adf0ed998dfb710fff827861ac1a4c6601be8034179350ab000000006a473044022020e7b448318fa44b977d557b639aaf3a9666cf6d8dd446bd7812e752ddfcd1d302207159d22c2e379b77b0514b8e0767d0e9fff7063a659c268d605be436f65703884121031a97eb1664ceffa32988f7ea7c6726d681f1385b9765be1a40d6083fba4e6c69ffffffff2e1fb2ad94461104b147ffe95d0534eb98495c45831547b70eae652ac6cf52d0000000006b483045022100b0ce5496d51673f82430eee24c57f7f2f2631e5b9b32c78bbd79e1cbf3f6297b02201c807ecfa86c1c493e83f1235a19e4426da651e8f76c2f4b41ceebf1222a9291412102e4aa3631fd0b4a877c7c0a040b8211636f743c392ce17e6f266beb1b62490af9ffffffff311368bcf1bac2ae2e906bd7e84e9b45da861a63154ae5c3d69840f65486ba86000000006b483045022100d5f63c5284604eefb942fa9710f8d5b5bccf431e63c496237a0c41eb5c6debf102202bda17f3b7406b9c41f44c7377261413cfa144489a70a40e9e9126b3e7f2fc734121032e413587a71814365b7912eac3a052d8ac0c5f2351d3d84863a02bafefd41f19ffffffff2e9e219c5a68079891a8d2b00bfcf3772fa605997773c2c516bb5ac99aa8ee06000000006a47304402207b6e0d96d0ce538fb54fcb1731a35632b6e40efde834ce45ee22f0c0f5baa886022009327de37e3fb657af29161d265db558869c09e295e84ddb2f686a492db0015a41210389c44f336f7c8cc3096f8f40bc5bdbffea24da9e26649dbe6b862d7d369698d0ffffffff0102b84f05000000001976a9145c52250125494685f133df34f47fb88799b2903588ac00000000')
         stream = BytesIO(raw_tx)
         tx = Tx.parse(stream)
@@ -646,4 +858,28 @@ class TxTest(TestCase):
             h160 = decode_base58(addr)
             tx_in._value = value
             tx_in._script_pubkey = p2pkh_script(h160)
+        self.assertTrue(tx.verify())
+
+    def test_bch(self):
+        raw = unhexlify('')
+        stream = BytesIO(raw)
+        tx = BCHTx.parse(stream)
+        self.assertTrue(tx.verify())
+
+    def test_btg(self):
+        raw = unhexlify('')
+        stream = BytesIO(raw)
+        tx = BTGTx.parse(stream)
+        self.assertTrue(tx.verify())
+
+    def test_bcd(self):
+        raw = unhexlify('')
+        stream = BytesIO(raw)
+        tx = BCDTx.parse(stream)
+        self.assertTrue(tx.verify())
+
+    def test_sbtc(self):
+        raw = unhexlify('0100000002a81e0df5218289cc4ee761a1747b494990cc1f5b2dc84f0542ad6f28f69d5f4c040000006b483045022100aaf4a05870a9a8ca79a612600936d27bbfce97ebf4e2fe4d311e40c4b78ca6550220175ecff50679023ffce58019ee711784229b8c738b85093d34b4ccc72592087341210313910dbdf4ecfc35f6193b8f6484ab554587f6c7e5e376351e0978e7433d8c80ffffffff17a8282d91fccc03f7d422f5b124427c09c391aca3743cc1e04b7afbe8e282b9010000006b483045022100ef1c6716e19cf7de6eea6cb6468ce7efb2480d72795dc2066d7b1ea823830a6102204cbcdc56e420d9a88a650c126375815443636a0d628096b1439814445156bb0a41210313910dbdf4ecfc35f6193b8f6484ab554587f6c7e5e376351e0978e7433d8c80ffffffff01a05d5804000000001976a9144c3496d9f64847b45318baa5afd6b515c76013cf88ac00000000')
+        stream = BytesIO(raw)
+        tx = SBTCTx.parse(stream)
         self.assertTrue(tx.verify())
