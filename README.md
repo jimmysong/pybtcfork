@@ -26,7 +26,14 @@ Install virtualenv:
 
     $ git clone https://github.com/jimmysong/hardforkhelp
     $ cd hardforkhelp
+
+Linux/OSX:
+
     $ virtualenv -p python3 .venv
+
+Windows:
+
+    $ virtualenv -p C:\\PathToYourPythonInstallation\\Python.exe .venv
 
 Linux/OSX:
 
