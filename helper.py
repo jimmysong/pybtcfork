@@ -45,7 +45,7 @@ def encode_base58(s):
             break
     prefix = b'1' * count
     # convert from binary to hex, then hex to integer
-    num = int(hexlify(s), 16)
+    num = int.from_bytes(s, 'big')
     result = bytearray()
     while num > 0:
         num, mod = divmod(num, 58)
@@ -63,13 +63,27 @@ def p2pkh_script(h160):
     return b'\x76\xa9\x14' + h160 + b'\x88\xac'
 
 
-def decode_base58(s, num_bytes=25):
+def decode_base58(s, num_bytes=25, validate_checksum=True):
     num = 0
     for c in s.encode('ascii'):
         num *= 58
         num += BASE58_ALPHABET.index(c)
-    # disregard the prefix and checksum
-    return num.to_bytes(num_bytes, byteorder='big')[1:-4]
+    combined = num.to_bytes(num_bytes, byteorder='big')
+    checksum = combined[-4:]
+    if validate_checksum:
+        if double_sha256(combined[:-4])[:4] != checksum:
+            raise RuntimeError('bad address: {} {}'.format(checksum, double_sha256(combined)[:4]))
+    return combined[:-4]
+
+
+def address_to_hash160(s):
+    b58 = decode_base58(s)
+    return b58[1:]
+
+
+def address_is_testnet(s):
+    b58 = decode_base58(s)
+    return b58[0] == 0x6f
 
 
 def read_varint(s):
@@ -218,7 +232,7 @@ class HelperTest(TestCase):
 
     def test_base58(self):
         addr = 'mnrVtF8DWjMu839VW3rBfgYaAfKk8983Xf'
-        h160 = hexlify(decode_base58(addr))
+        h160 = hexlify(address_to_hash160(addr))
         want = b'507b27411ccf7f16f10297de6cef3f291623eddf'
         self.assertEqual(h160, want)
         got = encode_base58_checksum(b'\x6f' + unhexlify(h160))

@@ -3,7 +3,18 @@ from io import BytesIO
 from random import randint
 from unittest import TestCase
 
-from helper import double_sha256, decode_base58, encode_base58, encode_base58_checksum, hash160
+import hmac
+import hashlib
+
+from helper import (
+    address_to_hash160,
+    decode_base58,
+    double_sha256,
+    encode_base58,
+    encode_base58_checksum,
+    hash160,
+    p2pkh_script
+)
 
 
 class FieldElement:
@@ -444,12 +455,16 @@ class S256Point(Point):
         # if non-compressed, starts with b'\x04' followod by self.x and then self.y
             return b'\x04' + self.x.num.to_bytes(32, 'big') + self.y.num.to_bytes(32, 'big')
 
+    def h160(self, compressed=True):
+        return hash160(self.sec(compressed))
+
+    def p2pkh_script(self, compressed=True):
+        h160 = self.h160(compressed)
+        return p2pkh_script(h160)
+
     def address(self, compressed=True, testnet=False):
         '''Returns the address string'''
-        # get the sec
-        sec = self.sec(compressed)
-        # hash160 the sec
-        h160 = hash160(sec)
+        h160 = self.h160(compressed)
         # raw is hash 160 prepended w/ b'\x00' for mainnet, b'\x6f' for testnet
         if testnet:
             prefix = b'\x6f'
@@ -664,16 +679,39 @@ class SignatureTest(TestCase):
 
 class PrivateKey:
 
-    def __init__(self, secret):
+    def __init__(self, secret, compressed=False, testnet=False):
         self.secret = secret
         self.point = secret*G
+        self.compressed = compressed
+        self.testnet = testnet
 
     def hex(self):
         return '{:x}'.format(self.secret).zfill(64)
 
+    def deterministic_k(self, z):
+        # RFC6979, optimized for secp256k1
+        k = b'\x00' * 32
+        v = b'\x01' * 32
+        if z > N:
+            z -= N
+        z_bytes = z.to_bytes(32, 'big')
+        secret_bytes = self.secret.to_bytes(32, 'big')
+        k = hmac.new(k, v + b'\x00' + secret_bytes + z_bytes, hashlib.sha256).digest()
+        v = hmac.new(k, v, hashlib.sha256).digest()
+        k = hmac.new(k, v + b'\x01' + secret_bytes + z_bytes, hashlib.sha256).digest()
+        v = hmac.new(k, v, hashlib.sha256).digest()
+        while 1:
+            v = hmac.new(k, v, hashlib.sha256).digest()
+            candidate = int.from_bytes(v, 'big')
+            if candidate >= 1 and candidate < N:
+                return candidate
+            k = hmac.new(k, v + b'\x00', hashlib.sha256).digest()
+            v = hmac.new(k, v, hashlib.sha256).digest()
+
     def sign(self, z):
-        # we need a random number k: randint(0, 2**256)
-        k = randint(0, 2**256)
+        # use deterministic signatures
+        k = self.deterministic_k(z)
+        
         # r is the x coordinate of the resulting point k*G
         r = (k*G).x.num
         # remember 1/k = pow(k, N-2, N)
@@ -704,7 +742,7 @@ class PrivateKey:
 
     @classmethod
     def parse(cls, wif):
-        secret_bytes = decode_base58(wif, num_bytes=40)
+        secret_bytes = decode_base58(wif, num_bytes=40, validate_checksum=False)
         # delete all 0's at beginning
         count = 0
         for b in secret_bytes:
@@ -714,13 +752,17 @@ class PrivateKey:
                 break
         secret_bytes = secret_bytes[count:]
         # remove the first and last if we have 34, only the first if we have 33
+        testnet = secret_bytes[0] == 0xef
         if len(secret_bytes) == 34:
             secret_bytes = secret_bytes[1:-1]
+            compressed = True
         elif len(secret_bytes) == 33:
             secret_bytes = secret_bytes[1:]
+            compressed = False
         else:
             raise RuntimeError('not valid WIF')
-        return cls(int.from_bytes(secret_bytes, 'big'))
+        secret = int.from_bytes(secret_bytes, 'big')
+        return cls(secret, compressed=compressed, testnet=testnet)
 
 
 class PrivateKeyTest(TestCase):
@@ -759,3 +801,10 @@ class PrivateKeyTest(TestCase):
         expected = 0x1cca23de92fd1862fb5b76e5f4f50eb082165e5191e116c18ed1a6b24be6a53f
         self.assertEqual(pk.secret, expected)
         
+    def test_deterministic_k(self):
+        secret = 0x1111111111111111111111111111111111111111111111111111111111111111
+        z = 0x2222222222222222222222222222222222222222222222222222222222222222
+        pk = PrivateKey(secret=secret)
+        k = pk.deterministic_k(z)
+        want = 0x6931e1828ba0afba580ed7c833bfe082c84f1331afa33a6b98ad8c493cc5edd0
+        self.assertEqual(k, want)

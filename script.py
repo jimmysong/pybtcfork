@@ -191,7 +191,7 @@ class Script:
             # <x> <sig1> ... <sigm> <redeemscript ends with OP_CHECKMULTISIG>
             return 'p2sh sig'
         else:
-            return 'unknown'
+            return 'unknown: {}'.format(self)
 
     def serialize(self):
         result = b''
