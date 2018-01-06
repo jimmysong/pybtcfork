@@ -625,14 +625,14 @@ class Signature:
         # remove all null bytes at the beginning
         rbin = rbin.lstrip(b'\x00')
         # if rbin has a high bit, add a 00
-        if rbin[0] > 128:
+        if rbin[0] & 0x80:
             rbin = b'\x00' + rbin
         result = bytes([2, len(rbin)]) + rbin
         sbin = self.s.to_bytes(32, byteorder='big')
         # remove all null bytes at the beginning
         sbin = sbin.lstrip(b'\x00')
         # if sbin has a high bit, add a 00
-        if sbin[0] > 128:
+        if sbin[0] & 0x80:
             sbin = b'\x00' + sbin
         result += bytes([2, len(sbin)]) + sbin
         return bytes([0x30, len(result)]) + result
@@ -742,15 +742,7 @@ class PrivateKey:
 
     @classmethod
     def parse(cls, wif):
-        secret_bytes = decode_base58(wif, num_bytes=40, validate_checksum=False)
-        # delete all 0's at beginning
-        count = 0
-        for b in secret_bytes:
-            if b == 0:
-                count += 1
-            else:
-                break
-        secret_bytes = secret_bytes[count:]
+        secret_bytes = decode_base58(wif, num_bytes=40, strip_leading_zeros=True)
         # remove the first and last if we have 34, only the first if we have 33
         testnet = secret_bytes[0] == 0xef
         if len(secret_bytes) == 34:

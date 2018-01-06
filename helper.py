@@ -63,16 +63,18 @@ def p2pkh_script(h160):
     return b'\x76\xa9\x14' + h160 + b'\x88\xac'
 
 
-def decode_base58(s, num_bytes=25, validate_checksum=True):
+def decode_base58(s, num_bytes=25, strip_leading_zeros=False):
     num = 0
     for c in s.encode('ascii'):
         num *= 58
         num += BASE58_ALPHABET.index(c)
     combined = num.to_bytes(num_bytes, byteorder='big')
+    if strip_leading_zeros:
+        while combined[0] == 0:
+            combined = combined[1:]
     checksum = combined[-4:]
-    if validate_checksum:
-        if double_sha256(combined[:-4])[:4] != checksum:
-            raise RuntimeError('bad address: {} {}'.format(checksum, double_sha256(combined)[:4]))
+    if double_sha256(combined[:-4])[:4] != checksum:
+        raise RuntimeError('bad address: {} {}'.format(checksum, double_sha256(combined)[:4]))
     return combined[:-4]
 
 

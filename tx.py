@@ -45,6 +45,7 @@ class Tx(LibBitcoinClient):
 
     default_version = 1
     default_hash_type = 1
+    cache = {}
     
     def __init__(self, version, tx_ins, tx_outs, locktime, testnet=False):
         self.version = version
@@ -78,6 +79,8 @@ class Tx(LibBitcoinClient):
     def fetch_address_utxos(cls, address, at_block_height=None):
         # grab all unspent transaction outputs as of block block_height
         # if block_height is None, we include all utxos
+        if address in cls.cache:
+            return cls.cache[address]
         h160 = address_to_hash160(address)
         testnet = address_is_testnet(address)
         socket = cls.get_socket(testnet)
@@ -105,7 +108,8 @@ class Tx(LibBitcoinClient):
             block_height = little_endian_to_int(response[37:41])
             if kind == 0:
                 value = little_endian_to_int(response[41:49])
-                receives.append([prev_tx, prev_index, value])
+                if at_block_height is None or block_height < at_block_height:
+                    receives.append([prev_tx, prev_index, value])
             else:
                 if at_block_height is None or block_height < at_block_height:
                     spent.add(little_endian_to_int(response[41:49]))
@@ -119,6 +123,7 @@ class Tx(LibBitcoinClient):
             key = tx_upper_49_bits | index_lower_15_bits
             if key not in spent:
                 utxos.append([prev_tx[::-1], little_endian_to_int(prev_index), value])
+        cls.cache[address] = utxos
         return utxos
 
     @classmethod
@@ -138,6 +143,9 @@ class Tx(LibBitcoinClient):
             for prev_tx, prev_index, value in utxos:
                 tx_ins.append(TxIn(prev_tx, prev_index, b'', sequence, value, script_pubkey))
                 total += value
+        num_tx_ins = len(tx_ins)
+        if num_tx_ins == 0:
+            return
         script_pubkey = p2pkh_script(address_to_hash160(destination_addr))
         tx_out = TxOut(total - fee, script_pubkey)
         tx = cls(cls.default_version, tx_ins, [tx_out], 0, testnet=testnet)
@@ -373,8 +381,15 @@ class Tx(LibBitcoinClient):
             if not self.sign_input(i, private_key, hash_type, compressed=compressed):
                 raise RuntimeError('signing failed')
 
+class ForkTx(Tx):
+    fork_block = 0
+    
+    @classmethod
+    def fetch_address_utxos(cls, address):
+        return super().fetch_address_utxos(address, at_block_height=cls.fork_block)
 
-class BCHTx(Tx):
+
+class BCHTx(ForkTx):
     fork_block = 478558
     fork_id = 0
     default_hash_type = 0x41
@@ -448,13 +463,17 @@ class BTGTx(BCHTx):
     fork_id = 79 << 8
 
 
-class BCDTx(Tx):
+class BCDTx(ForkTx):
     fork_block = 495866
     default_version = 12
+    default_block_hash = unhexlify('c51159637a85160ed5c726fb0df68e14352b495e4c57444d4d427bbc68db0551')
                  
-    def __init__(self, version, tx_ins, tx_outs, locktime, prev_block_hash=b''):
+    def __init__(self, version, tx_ins, tx_outs, locktime, prev_block_hash=None, testnet=False):
         super().__init__(version, tx_ins, tx_outs, locktime, testnet=False)
-        self.prev_block_hash = prev_block_hash
+        if prev_block_hash is None:
+            self.prev_block_hash = self.default_block_hash
+        else:
+            self.prev_block_hash = prev_block_hash
 
     @classmethod
     def parse(cls, s):
@@ -561,7 +580,7 @@ class BCDTx(Tx):
         return int.from_bytes(double_sha256(result), 'big')
 
 
-class SBTCTx(Tx):
+class SBTCTx(ForkTx):
     fork_block = 498888
     default_version = 2
     default_hash_type = 0x41

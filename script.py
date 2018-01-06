@@ -176,7 +176,7 @@ class Script:
             # OP_HASH160 <20-byte hash> <OP_EQUAL>
             return 'p2sh'
         elif type(self.elements[0]) == bytes \
-             and len(self.elements[0]) in (0x47, 0x48, 0x49) \
+             and len(self.elements[0]) in (0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49) \
              and type(self.elements[1]) == bytes \
              and len(self.elements[1]) in (0x21, 0x41):
             # p2pkh scriptSig:
@@ -184,7 +184,7 @@ class Script:
             return 'p2pkh sig'
         elif len(self.elements) > 1 \
              and type(self.elements[1]) == bytes \
-             and len(self.elements[1]) in (0x47, 0x48, 0x49) \
+             and len(self.elements[1]) in (0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49) \
              and self.elements[-1][-1] == 0xae:
             # HACK: assumes p2sh is a multisig
             # p2sh multisig:
