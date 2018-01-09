@@ -1,4 +1,6 @@
 *~
 *__pycache__
 .venv
+.coverage
 *.ipynb_checkpoints
+*.pyc
