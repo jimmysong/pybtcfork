@@ -15,7 +15,7 @@ from helper import (
     int_to_little_endian,
     little_endian_to_int,
 )
-from tx import LibBitcoinClient
+from tx import LibBitcoinClient, Tx
 
 
 PBKDF2_ROUNDS = 2048
@@ -182,15 +182,17 @@ class HDPrivateKey(LibBitcoinClient):
 
     @classmethod
     def bip44_address_from_mnemonic(
-            cls, mnemonic, password=b'', path=b'm/44\'/0\'', num=5):
+            cls, mnemonic, password=b'', path=b'm/44\'/0\'',
+            tx_cls=Tx, num=5):
         coin = cls.from_mnemonic(mnemonic, password, path)
+        prefix = bytes([tx_cls.p2pkh_prefixes[0]])
         addrs = []
-        for account_num in range(2):
+        for account_num in range(5):
             account = coin.child(account_num, hardened=True)
             for chain in (0, 1):
                 cur = account.child(chain)
                 for index in range(num):
-                    addrs.append(cur.child(index).address())
+                    addrs.append(cur.child(index).address(prefix=prefix))
         return addrs
 
     def traverse(self, path):
@@ -246,7 +248,7 @@ class HDPrivateKey(LibBitcoinClient):
                 key=self.chain_code, msg=data, digestmod=sha512).digest()
         secret = (int.from_bytes(raw[:32], 'big')
                   + self.private_key.secret) % N
-        private_key = PrivateKey(secret=secret)
+        private_key = PrivateKey(secret=secret, compressed=True)
         chain_code = raw[32:]
         depth = self.depth + 1
         child_number = index
@@ -259,11 +261,11 @@ class HDPrivateKey(LibBitcoinClient):
             testnet=self.testnet,
         )
 
-    def wif(self):
-        return self.private_key.wif(testnet=self.testnet)
+    def wif(self, prefix=b'\x80'):
+        return self.private_key.wif(prefix=prefix)
 
-    def address(self):
-        return self.pub.point.address()
+    def address(self, prefix=b'\x00'):
+        return self.pub.point.address(prefix=prefix)
 
     def h160(self):
         return self.pub.point.h160()

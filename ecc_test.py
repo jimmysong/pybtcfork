@@ -245,25 +245,25 @@ class S256Test(TestCase):
         testnet_address = 'mieaqB68xDCtbUBYFoUNcmZNwk74xcBfTP'
         point = secret*G
         self.assertEqual(
-            point.address(compressed=True, testnet=False), mainnet_address)
+            point.address(compressed=True, prefix=b'\x00'), mainnet_address)
         self.assertEqual(
-            point.address(compressed=True, testnet=True), testnet_address)
+            point.address(compressed=True, prefix=b'\x6f'), testnet_address)
         secret = 321
         mainnet_address = '1S6g2xBJSED7Qr9CYZib5f4PYVhHZiVfj'
         testnet_address = 'mfx3y63A7TfTtXKkv7Y6QzsPFY6QCBCXiP'
         point = secret*G
         self.assertEqual(
-            point.address(compressed=False, testnet=False), mainnet_address)
+            point.address(compressed=False, prefix=b'\x00'), mainnet_address)
         self.assertEqual(
-            point.address(compressed=False, testnet=True), testnet_address)
+            point.address(compressed=False, prefix=b'\x6f'), testnet_address)
         secret = 4242424242
         mainnet_address = '1226JSptcStqn4Yq9aAmNXdwdc2ixuH9nb'
         testnet_address = 'mgY3bVusRUL6ZB2Ss999CSrGVbdRwVpM8s'
         point = secret*G
         self.assertEqual(
-            point.address(compressed=False, testnet=False), mainnet_address)
+            point.address(compressed=False, prefix=b'\x00'), mainnet_address)
         self.assertEqual(
-            point.address(compressed=False, testnet=True), testnet_address)
+            point.address(compressed=False, prefix=b'\x6f'), testnet_address)
 
     def test_verify(self):
         point = S256Point(
@@ -310,32 +310,38 @@ class PrivateKeyTest(TestCase):
         self.assertTrue(pk.point.verify(z, sig))
 
     def test_wif(self):
-        pk = PrivateKey(2**256-2**199)
-        expected = 'L5oLkpV3aqBJ4BgssVAsax1iRa77G5CVYnv9adQ6Z87te7TyUdSC'
-        self.assertEqual(pk.wif(compressed=True, testnet=False), expected)
-        pk = PrivateKey(2**256-2**201)
-        expected = '93XfLeifX7Jx7n7ELGMAf1SUR6f9kgQs8Xke8WStMwUtrDucMzn'
-        self.assertEqual(pk.wif(compressed=False, testnet=True), expected)
-        pk = PrivateKey(0x0dba685b4511dbd3d368e5c4358a1277de9486447af7b3604a69b8d9d8b7889d)
-        expected = '5HvLFPDVgFZRK9cd4C5jcWki5Skz6fmKqi1GQJf5ZoMofid2Dty'
-        self.assertEqual(pk.wif(compressed=False, testnet=False), expected)
-        pk = PrivateKey(0x1cca23de92fd1862fb5b76e5f4f50eb082165e5191e116c18ed1a6b24be6a53f)
-        expected = 'cNYfWuhDpbNM1JWc3c6JTrtrFVxU4AGhUKgw5f93NP2QaBqmxKkg'
-        self.assertEqual(pk.wif(compressed=True, testnet=True), expected)
+        pk = PrivateKey(2**256-2**199, compressed=True)
+        want = 'L5oLkpV3aqBJ4BgssVAsax1iRa77G5CVYnv9adQ6Z87te7TyUdSC'
+        self.assertEqual(pk.wif(prefix=b'\x80'), want)
+        pk = PrivateKey(2**256-2**201, compressed=False)
+        want = '93XfLeifX7Jx7n7ELGMAf1SUR6f9kgQs8Xke8WStMwUtrDucMzn'
+        self.assertEqual(pk.wif(prefix=b'\xef'), want)
+        pk = PrivateKey(
+            0x0dba685b4511dbd3d368e5c4358a1277de9486447af7b3604a69b8d9d8b7889d,
+            compressed=False,
+        )
+        want = '5HvLFPDVgFZRK9cd4C5jcWki5Skz6fmKqi1GQJf5ZoMofid2Dty'
+        self.assertEqual(pk.wif(prefix=b'\x80'), want)
+        pk = PrivateKey(
+            0x1cca23de92fd1862fb5b76e5f4f50eb082165e5191e116c18ed1a6b24be6a53f,
+            compressed=True,
+        )
+        want = 'cNYfWuhDpbNM1JWc3c6JTrtrFVxU4AGhUKgw5f93NP2QaBqmxKkg'
+        self.assertEqual(pk.wif(prefix=b'\xef'), want)
 
     def test_parse(self):
         pk = PrivateKey.parse('L5oLkpV3aqBJ4BgssVAsax1iRa77G5CVYnv9adQ6Z87te7TyUdSC')
-        expected = 2**256-2**199
-        self.assertEqual(pk.secret, expected)
+        want = 2**256-2**199
+        self.assertEqual(pk.secret, want)
         pk = PrivateKey.parse('93XfLeifX7Jx7n7ELGMAf1SUR6f9kgQs8Xke8WStMwUtrDucMzn')
-        expected = 2**256-2**201
-        self.assertEqual(pk.secret, expected)
+        want = 2**256-2**201
+        self.assertEqual(pk.secret, want)
         pk = PrivateKey.parse('5HvLFPDVgFZRK9cd4C5jcWki5Skz6fmKqi1GQJf5ZoMofid2Dty')
-        expected = 0x0dba685b4511dbd3d368e5c4358a1277de9486447af7b3604a69b8d9d8b7889d
-        self.assertEqual(pk.secret, expected)
+        want = 0x0dba685b4511dbd3d368e5c4358a1277de9486447af7b3604a69b8d9d8b7889d
+        self.assertEqual(pk.secret, want)
         pk = PrivateKey.parse('cNYfWuhDpbNM1JWc3c6JTrtrFVxU4AGhUKgw5f93NP2QaBqmxKkg')
-        expected = 0x1cca23de92fd1862fb5b76e5f4f50eb082165e5191e116c18ed1a6b24be6a53f
-        self.assertEqual(pk.secret, expected)
+        want = 0x1cca23de92fd1862fb5b76e5f4f50eb082165e5191e116c18ed1a6b24be6a53f
+        self.assertEqual(pk.secret, want)
 
     def test_deterministic_k(self):
         secret = 0x1111111111111111111111111111111111111111111111111111111111111111

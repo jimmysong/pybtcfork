@@ -38,12 +38,12 @@ class ScriptTest(TestCase):
         script_raw = unhexlify('76a914338c84849423992471bffb1a54a8d9b1d69dc28a88ac')
         script_pubkey = Script.parse(script_raw)
         want = '15hZo812Lx266Dot6T52krxpnhrNiaqHya'
-        self.assertEqual(script_pubkey.address(testnet=False), want)
+        self.assertEqual(script_pubkey.address(), want)
         want = 'mkDX6B619yTLsLHVp23QanB9ehT5bcf89D'
-        self.assertEqual(script_pubkey.address(testnet=True), want)
+        self.assertEqual(script_pubkey.address(prefix=b'\x6f'), want)
         script_raw = unhexlify('a91474d691da1574e6b3c192ecfb52cc8984ee7b6c5687')
         script_pubkey = Script.parse(script_raw)
         want = '3CLoMMyuoDQTPRD3XYZtCvgvkadrAdvdXh'
-        self.assertEqual(script_pubkey.address(testnet=False), want)
-        want = '2LSYbUfinZx4JKUHF6zrUtNb3SupF4HmKwH'
-        self.assertEqual(script_pubkey.address(testnet=True), want)
+        self.assertEqual(script_pubkey.address(prefix=b'\x05'), want)
+        want = '2N3u1R6uwQfuobCqbCgBkpsgBxvr1tZpe7B'
+        self.assertEqual(script_pubkey.address(prefix=b'\xc4'), want)

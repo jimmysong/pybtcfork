@@ -85,16 +85,16 @@ class HelperTest(TestCase):
     def test_p2pkh_address(self):
         h160 = unhexlify('74d691da1574e6b3c192ecfb52cc8984ee7b6c56')
         want = '1BenRpVUFK65JFWcQSuHnJKzc4M8ZP8Eqa'
-        self.assertEqual(h160_to_p2pkh_address(h160, testnet=False), want)
+        self.assertEqual(h160_to_p2pkh_address(h160), want)
         want = 'mrAjisaT4LXL5MzE81sfcDYKU3wqWSvf9q'
-        self.assertEqual(h160_to_p2pkh_address(h160, testnet=True), want)
+        self.assertEqual(h160_to_p2pkh_address(h160, prefix=b'\x6f'), want)
 
     def test_p2sh_address(self):
         h160 = unhexlify('74d691da1574e6b3c192ecfb52cc8984ee7b6c56')
         want = '3CLoMMyuoDQTPRD3XYZtCvgvkadrAdvdXh'
-        self.assertEqual(h160_to_p2sh_address(h160, testnet=False), want)
-        want = '2LSYbUfinZx4JKUHF6zrUtNb3SupF4HmKwH'
-        self.assertEqual(h160_to_p2sh_address(h160, testnet=True), want)
+        self.assertEqual(h160_to_p2sh_address(h160, prefix=b'\x05'), want)
+        want = '2N3u1R6uwQfuobCqbCgBkpsgBxvr1tZpe7B'
+        self.assertEqual(h160_to_p2sh_address(h160, prefix=b'\xc4'), want)
 
     def test_merkle_parent(self):
         tx_hash0 = unhexlify('c117ea8ec828342f4dfb0ad6bd140e03a50720ece40169ee38bdc15d9eb64cf5')

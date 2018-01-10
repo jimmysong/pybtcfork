@@ -272,14 +272,10 @@ class S256Point(Point):
         h160 = self.h160(compressed)
         return p2pkh_script(h160)
 
-    def address(self, compressed=True, testnet=False):
+    def address(self, compressed=True, prefix=b'\x00'):
         '''Returns the address string'''
         h160 = self.h160(compressed)
         # raw is hash 160 prepended w/ b'\x00' for mainnet, b'\x6f' for testnet
-        if testnet:
-            prefix = b'\x6f'
-        else:
-            prefix = b'\x00'
         raw = prefix + h160
         # checksum is first 4 bytes of double_sha256 of raw
         checksum = double_sha256(raw)[:4]
@@ -428,17 +424,12 @@ class PrivateKey:
         # Signature(r, s)
         return Signature(r, s)
 
-    def wif(self, compressed=True, testnet=False):
+    def wif(self, prefix=b'\x80'):
         # convert the secret from integer to a 32-bytes in big endian using
         # num.to_bytes(32, 'big')
         secret_bytes = self.secret.to_bytes(32, 'big')
-        # prepend b'\xef' on testnet, b'\x80' on mainnet
-        if testnet:
-            prefix = b'\xef'
-        else:
-            prefix = b'\x80'
         # append b'\x01' if compressed
-        if compressed:
+        if self.compressed:
             suffix = b'\x01'
         else:
             suffix = b''

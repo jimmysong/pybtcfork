@@ -2,6 +2,7 @@ from binascii import hexlify, unhexlify
 from io import BytesIO
 
 import random
+import requests
 import zmq
 
 from ecc import PrivateKey, S256Point, Signature
@@ -83,9 +84,9 @@ class Tx(LibBitcoinClient):
         h160 = b58[1:]
         testnet = prefix in cls.testnet_prefixes
         if prefix in cls.p2pkh_prefixes:
-            script_pubkey = p2pkh_script(h160)
+            script_pubkey = Script.parse(p2pkh_script(h160))
         elif prefix in cls.p2sh_prefixes:
-            script_pubkey = p2sh_script(h160)
+            script_pubkey = Script.parse(p2sh_script(h160))
         else:
             raise RuntimeError('unknown type of address {}'.format(addr))
         return {
@@ -147,14 +148,18 @@ class Tx(LibBitcoinClient):
     @classmethod
     def spend_all_tx(cls, wifs, destination_addr, fee=540):
         priv_keys = [PrivateKey.parse(wif) for wif in wifs]
-        address_data = cls.get_address_data(destination_addr)
-        testnet = address_data['testnet']
+        destination_address_data = cls.get_address_data(destination_addr)
+        testnet = destination_address_data['testnet']
+        if testnet:
+            prefix = bytes([cls.testnet_prefixes[0]])
+        else:
+            prefix = bytes([cls.p2pkh_prefixes[0]])
         tx_ins = []
         sequence = 0xffffffff
         priv_lookup = {}
         total = 0
         for priv_key in priv_keys:
-            addr = priv_key.point.address(priv_key.compressed, testnet)
+            addr = priv_key.point.address(priv_key.compressed, prefix=prefix)
             # look up utxos for each address
             utxos = cls.fetch_address_utxos(addr)
             address_data = cls.get_address_data(addr)
@@ -167,8 +172,8 @@ class Tx(LibBitcoinClient):
         num_tx_ins = len(tx_ins)
         if num_tx_ins == 0:
             return
-        script_pubkey = self.address_to_script_pubkey(destination_addr)
-        tx_out = TxOut(total - fee, script_pubkey)
+        script_pubkey = destination_address_data['script_pubkey']
+        tx_out = TxOut(total - fee, script_pubkey.serialize())
         tx = cls(cls.default_version, tx_ins, [tx_out], 0, testnet=testnet)
         for index, tx_in in enumerate(tx_ins):
             priv_key = priv_lookup[tx_in.script_pubkey()]
@@ -402,6 +407,25 @@ class Tx(LibBitcoinClient):
             if not self.sign_input(i, private_key, hash_type, compressed=compressed):
                 raise RuntimeError('signing failed')
 
+
+class BTXTx(Tx):
+    fork_block = 492820
+    default_version = 2
+
+    @classmethod
+    def fetch_address_utxos(cls, address):
+        api_key = 'e86ce04b6888'
+        url = 'https://chainz.cryptoid.info/btx/api.dws?q=unspent&active={}&key={}'.format(
+            address, api_key)
+        result = requests.get(url).json()
+        print(address)
+        print(result)
+        utxos = []
+        for item in result['unspent_outputs']:
+            utxos.append([unhexlify(item['tx_hash']), item['tx_ouput_n'], int(item['value'])])
+        return utxos
+
+      
 class ForkTx(Tx):
     fork_block = 0
     
