@@ -217,3 +217,23 @@ class HDTest(TestCase):
                 public_key = HDPublicKey.parse(xpub)
                 self.assertEqual(private_key.xprv(), xprv)
                 self.assertEqual(private_key.xpub(), public_key.xpub())
+
+    def test_bip49(self):
+        mnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
+        password = b''
+        path = b"m"
+        hd_private_key = HDPrivateKey.from_mnemonic(mnemonic, password, path=path, testnet=True)
+        want = 'tprv8ZgxMBicQKsPe5YMU9gHen4Ez3ApihUfykaqUorj9t6FDqy3nP6eoXiAo2ssvpAjoLroQxHqr3R5nE3a5dU3DHTjTgJDd7zrbniJr6nrCzd'
+        self.assertEqual(hd_private_key.xprv(), want)
+        account0 = hd_private_key.child(49, True).child(1, True).child(0, True)
+        want = 'tprv8gRrNu65W2Msef2BdBSUgFdRTGzC8EwVXnV7UGS3faeXtuMVtGfEdidVeGbThs4ELEoayCAzZQ4uUji9DUiAs7erdVskqju7hrBcDvDsdbY'
+        self.assertEqual(account0.xprv(), want)
+        account0_first_key = account0.child(0, False).child(0, False)
+        want = 'cULrpoZGXiuC19Uhvykx7NugygA3k86b3hmdCeyvHYQZSxojGyXJ'
+        self.assertEqual(account0_first_key.private_key.wif(), want)
+        want = 0xc9bdb49cfbaedca21c4b1f3a7803c34636b1d7dc55a717132443fc3f4c5867e8
+        self.assertEqual(account0_first_key.private_key.secret, want)
+        want = unhexlify('03a1af804ac108a8a51782198c2d034b28bf90c8803f5a53f76276fa69a4eae77f')
+        self.assertEqual(account0_first_key.private_key.point.sec(), want)
+        want = '2Mww8dCYPUpKHofjgcXcBCEGmniw9CoaiD2'
+        self.assertEqual(account0_first_key.segwit_address(), want)

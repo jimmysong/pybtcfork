@@ -1,4 +1,5 @@
 import hmac
+import requests
 
 from binascii import hexlify, unhexlify
 from hashlib import sha256, sha512
@@ -24,20 +25,20 @@ PBKDF2_ROUNDS = 2048
 class HDPrivateKey(LibBitcoinClient):
 
     def __init__(self, private_key, chain_code, depth, fingerprint,
-                 child_number, testnet=False):
+                 child_number):
         self.private_key = private_key
         self.chain_code = chain_code
         self.depth = depth
         self.fingerprint = fingerprint
         self.child_number = child_number
-        self.testnet = testnet
+        self.testnet = self.private_key.testnet
         self.pub = HDPublicKey(
             point=self.private_key.point,
             chain_code=chain_code,
             depth=depth,
             fingerprint=fingerprint,
             child_number=child_number,
-            testnet=testnet,
+            testnet=self.testnet,
         )
 
     def xprv(self):
@@ -57,61 +58,12 @@ class HDPrivateKey(LibBitcoinClient):
         return self.pub.xpub()
 
     @classmethod
-    def fetch_all_wifs_from_mnemonic(cls, mnemonic, password=b'',
-                                     path=b'm/44\'/0\''):
-        # grab all wifs that correspond to addresses that have had any activity
-        # for any account, if we have 10 blank addresses, we assume the wallet
-        # has no more to look at
-        hd_private_key = cls.bip44_coin_from_mnemonic(mnemonic, password, path)
-        wifs = []
-        for account in range(10):
-            account_private_key = hd_private_key.child(account, hardened=True)
-            for chain in (0, 1):
-                chain_private_key = account_private_key.child(chain)
-                index = 0
-                no_activity = 0
-                while no_activity < 5:
-                    current_private_key = chain_private_key.child(index)
-                    h160 = current_private_key.h160()
-                    socket = cls.get_socket()
-                    nonce = int_to_little_endian(randint(0, 2**32), 4)
-                    msg = b'blockchain.fetch_history3'
-                    socket.send(msg, SNDMORE)
-                    socket.send(nonce, SNDMORE)
-                    socket.send(h160 + b'\x00\x00\x00\x00')
-                    response_msg = socket.recv()
-                    response_nonce = socket.recv()
-                    if response_msg != msg or response_nonce != nonce:
-                        raise RuntimeError('received wrong msg: {}'.format(
-                            response_msg.decode('ascii')))
-                    response = socket.recv()
-                    response_code = little_endian_to_int(response[:4])
-                    if response_code != 0:
-                        raise RuntimeError(
-                            'got code from server: {}'.format(response_code))
-                    response = response[4:]
-                    if len(response) > 0:
-                        no_activity = 0
-                        wifs.append(current_private_key.wif())
-                    else:
-                        no_activity += 1
-                    index += 1
-        return wifs
-
-    @classmethod
-    def spend_all_tx_from_mnemonic(
-            cls, coin_class, mnemonic, password=b'', path=b'm/44\'/0\'',
-            destination=None, fee=540):
-        if destination is None:
-            raise RuntimeError('you must define a destination')
-        wifs = cls.fetch_all_wifs_from_mnemonic(mnemonic, password, path)
-        raw_tx = coin_class.spend_all_tx(wifs, destination, fee)
-        return raw_tx
-
-    @classmethod
-    def from_seed(cls, seed, path):
+    def from_seed(cls, seed, path, testnet=False):
         raw = HMAC(key=b'Bitcoin seed', msg=seed, digestmod=sha512).digest()
-        private_key = PrivateKey(secret=int.from_bytes(raw[:32], 'big'))
+        private_key = PrivateKey(
+            secret=int.from_bytes(raw[:32], 'big'),
+            testnet=testnet,
+        )
         chain_code = raw[32:]
         root = cls(
             private_key=private_key,
@@ -123,14 +75,14 @@ class HDPrivateKey(LibBitcoinClient):
         return root.traverse(path)
 
     @classmethod
-    def from_mnemonic(cls, mnemonic, password=b'', path=b'm'):
+    def from_mnemonic(cls, mnemonic, password=b'', path=b'm', testnet=False):
         binary_seed = bytearray()
         offset = 0
         words = mnemonic.split()
         if len(words) not in (12, 15, 18, 21, 24):
             raise RuntimeError('you need 12, 15, 18, 21, or 24 words')
         for word in words:
-            index = WORD_LIST.index(word)
+            index = WORD_LOOKUP[word]
             remaining = 11
             while remaining > 0:
                 bits_needed = 8 - offset
@@ -170,15 +122,88 @@ class HDPrivateKey(LibBitcoinClient):
         if checksum != bytes(computed_checksum):
             raise RuntimeError('words fail checksum: {}'.format(
                 hexlify(raw).decode('ascii')))
+        normalized_words = []
+        for word in words:
+            normalized_words.append(WORD_LIST[WORD_LOOKUP[word]])
+        normalized_mnemonic = ' '.join(normalized_words)
         seed = PBKDF2(
-            mnemonic, b'mnemonic' + password, iterations=PBKDF2_ROUNDS,
-            macmodule=hmac, digestmodule=sha512).read(64)
-        return cls.from_seed(seed, path)
+            normalized_mnemonic,
+            b'mnemonic' + password,
+            iterations=PBKDF2_ROUNDS,
+            macmodule=hmac,
+            digestmodule=sha512,
+        ).read(64)
+        return cls.from_seed(seed, path, testnet=testnet)
 
     @classmethod
-    def bip44_coin_from_mnemonic(
-            cls, mnemonic, password=b'', path=b'm/44\'/0\''):
-        return cls.from_mnemonic(mnemonic, password, path)
+    def fetch_all_wifs_from_mnemonic(
+            cls, mnemonic, password=b'', path=b'm', segwit=False):
+        # grab all wifs that correspond to addresses that have had any activity
+        # for any account, if we have 10 blank addresses, we assume the wallet
+        # has no more to look at
+        hd_private_key = cls.from_mnemonic(mnemonic, password, path)
+        wifs = []
+        for account in range(10):
+            account_private_key = hd_private_key.child(account, hardened=True)
+            if segwit:
+                account_index = 3
+                change_index = 10
+            else:
+                xpub = account_private_key.xpub()
+                url = 'http://blockchain.info/multiaddr?active={}'.format(
+                    xpub)
+                data = requests.get(url).json()['addresses'][0]
+                received = data['total_received']
+                if received == 0:
+                    continue
+                account_index = data['account_index']
+                change_index = data['change_index']
+            for chain, max_index in ((0, account_index), (1, change_index)):
+                chain_private_key = account_private_key.child(chain)
+                index = 0
+                for index in range(max_index+1):
+                    current_private_key = chain_private_key.child(index)
+                    h160 = current_private_key.h160()
+                    socket = cls.get_socket()
+                    nonce = int_to_little_endian(randint(0, 2**32), 4)
+                    msg = b'blockchain.fetch_history3'
+                    socket.send(msg, SNDMORE)
+                    socket.send(nonce, SNDMORE)
+                    socket.send(h160 + b'\x00\x00\x00\x00')
+                    response_msg = socket.recv()
+                    response_nonce = socket.recv()
+                    if response_msg != msg or response_nonce != nonce:
+                        raise RuntimeError('received wrong msg: {}'.format(
+                            response_msg.decode('ascii')))
+                    response = socket.recv()
+                    response_code = little_endian_to_int(response[:4])
+                    if response_code != 0:
+                        raise RuntimeError(
+                            'got code from server: {}'.format(response_code))
+                    response = response[4:]
+                    if len(response) > 0:
+                        print(current_private_key.address())
+                        wifs.append(current_private_key.wif())
+        return wifs
+
+    @classmethod
+    def spend_all_tx_from_mnemonic(
+            cls, coin_class, mnemonic, password=b'', path=b'm/44\'/0\'',
+            destination=None, fee=540, segwit=False, path_utxos=None):
+        if destination is None:
+            raise RuntimeError('you must define a destination')
+        if path_utxos is None:
+            raise RuntimeError('you must input path_utxos')
+        hd_priv_key = cls.from_mnemonic(mnemonic, password, path)
+        paths = []
+        utxos = []
+        for path, u in path_utxos:
+            paths.append(path)
+            utxos.extend(u)
+        private_keys = hd_priv_key.get_private_keys(paths)
+        raw_tx = coin_class.spend_all_tx(private_keys, destination, fee,
+                                         segwit=segwit, utxos=utxos)
+        return raw_tx
 
     @classmethod
     def bip44_address_from_mnemonic(
@@ -195,15 +220,39 @@ class HDPrivateKey(LibBitcoinClient):
                     addrs.append(cur.child(index).address(prefix=prefix))
         return addrs
 
+    def get_private_keys(self, utxos):
+        return [self.traverse(p).private_key for p in utxos]
+
+    def get_active_paths(self, account_gap=1, gap_limit=20, segwit=False):
+        account_num = 0
+        paths = []
+        empty_account_count = 0
+        while empty_account_count <= account_gap:
+            account = self.child(account_num, hardened=True)
+            account_path = "{}'/".format(account_num).encode('ascii')
+            sub_paths = account.pub.get_all_active_in_account(
+                gap_limit, segwit)
+            if len(sub_paths) == 0:
+                empty_account_count += 1
+            else:
+                paths.extend([(account_path + path, addr)
+                              for path, addr in sub_paths])
+            account_num += 1
+        return paths
+
     def traverse(self, path):
         current = self
-        for child in path.split(b'/')[1:]:
-            if child.endswith(b'\''):
+        if path.startswith(b'm'):
+            components = path.split(b'/')[1:]
+        else:
+            components = path.split(b'/')
+        for child in components:
+            if child.endswith(b"'"):
                 hardened = True
-                index = int(child[:-1])
+                index = int(child[:-1].decode('ascii'))
             else:
                 hardened = False
-                index = int(child)
+                index = int(child.decode('ascii'))
             current = current.child(index, hardened)
         return current
 
@@ -248,7 +297,11 @@ class HDPrivateKey(LibBitcoinClient):
                 key=self.chain_code, msg=data, digestmod=sha512).digest()
         secret = (int.from_bytes(raw[:32], 'big')
                   + self.private_key.secret) % N
-        private_key = PrivateKey(secret=secret, compressed=True)
+        private_key = PrivateKey(
+            secret=secret,
+            compressed=True,
+            testnet=self.testnet,
+        )
         chain_code = raw[32:]
         depth = self.depth + 1
         child_number = index
@@ -258,14 +311,16 @@ class HDPrivateKey(LibBitcoinClient):
             depth=depth,
             fingerprint=fingerprint,
             child_number=child_number,
-            testnet=self.testnet,
         )
 
-    def wif(self, prefix=b'\x80'):
+    def wif(self, prefix=None):
         return self.private_key.wif(prefix=prefix)
 
-    def address(self, prefix=b'\x00'):
-        return self.pub.point.address(prefix=prefix)
+    def address(self, prefix=None):
+        return self.pub.address(prefix=prefix)
+
+    def segwit_address(self, prefix=None):
+        return self.pub.segwit_address(prefix=prefix)
 
     def h160(self):
         return self.pub.point.h160()
@@ -344,6 +399,63 @@ class HDPublicKey:
             fingerprint=fingerprint,
             child_number=child_number,
         )
+
+    def address(self, prefix=None):
+        if prefix is None:
+            if self.testnet:
+                prefix = b'\x6f'
+            else:
+                prefix = b'\x00'
+        return self.point.address(prefix=prefix)
+
+    def segwit_address(self, prefix=None):
+        if prefix is None:
+            if self.testnet:
+                prefix = b'\xc4'
+            else:
+                prefix = b'\x05'
+        return self.point.segwit_address(prefix=prefix)
+
+    def get_all_active_in_account(self, gap_limit=20, segwit=False):
+        '''Returns the paths of the addresses that have activity'''
+        paths = []
+        for sub_account_num in (0, 1):
+            sub_account = self.child(sub_account_num)
+            indices = sub_account.get_active_child_indices(gap_limit, segwit)
+            paths.extend([
+                ('{}/{}'.format(sub_account_num, i[0]).encode('ascii'), i[1])
+                for i in indices])
+        return paths
+
+    def get_active_child_indices(self, gap_limit=20, segwit=False):
+        """Return the child indices that have activity"""
+        search = True
+        batch = 0
+        indices = []
+        while search:
+            batch_range = range(batch*gap_limit, (batch+1)*gap_limit)
+            addr_lookup = {}
+            addrs = []
+            for i in batch_range:
+                if segwit:
+                    addr = self.child(i).segwit_address()
+                else:
+                    addr = self.child(i).address()
+                addr_lookup[addr] = i
+                addrs.append(addr)
+            data = requests.get(
+                'http://blockchain.info/multiaddr?active={}'.format(
+                    '|'.join(addrs))).json()
+            current_received = 0
+            for item in data['addresses']:
+                received = item['total_received']
+                if received != 0:
+                    addr = item['address']
+                    indices.append((addr_lookup[addr], addr))
+                    current_received += received
+            batch += 1
+            search = current_received != 0
+        return indices
 
 
 WORD_LIST = [
@@ -2396,3 +2508,9 @@ WORD_LIST = [
     'zone',
     'zoo',
 ]
+
+WORD_LOOKUP = {}
+for i, word in enumerate(WORD_LIST):
+    WORD_LOOKUP[word] = i
+    if len(word) > 4:
+        WORD_LOOKUP[word[:4]] = i

@@ -2,6 +2,7 @@ from binascii import hexlify
 from io import BytesIO
 
 from helper import (
+    hash160,
     h160_to_p2pkh_address,
     h160_to_p2sh_address,
 )
@@ -66,10 +67,16 @@ class Script:
         elif len(self.elements) > 1 \
             and type(self.elements[1]) == bytes \
             and len(self.elements[1]) in range(0x40, 0x50) \
+            and type(self.elements[-1]) == bytes \
             and self.elements[-1][-1] == 0xae:
             # HACK: assumes p2sh is a multisig
             # p2sh multisig:
             # <x> <sig1> ... <sigm> <redeemscript ends with OP_CHECKMULTISIG>
+            return 'p2sh sig'
+        elif len(self.elements) == 1 \
+            and type(self.elements[0]) == bytes \
+            and len(self.elements[0]) == 0x16:
+            # HACK: assumes p2sh can be p2sh-p2pkh
             return 'p2sh sig'
         else:
             return 'unknown: {}'.format(self)
@@ -82,6 +89,9 @@ class Script:
             else:
                 result += bytes([len(element)]) + element
         return result
+
+    def hash160(self):
+        return hash160(self.serialize())
 
     def der_signature(self, index=0):
         '''index isn't used for p2pkh, for p2sh, means one of m sigs'''
@@ -99,9 +109,12 @@ class Script:
         if sig_type == 'p2pkh sig':
             return self.elements[1]
         elif sig_type == 'p2sh sig':
-            # HACK: assumes p2sh is a multisig
-            redeem_script = Script.parse(self.elements[-1])
-            return redeem_script.elements[index+1]
+            if len(self.elements) > 2:
+                # HACK: assumes p2sh is a multisig
+                redeem_script = Script.parse(self.elements[-1])
+                return redeem_script.elements[index+1]
+            else:
+                return None
 
     def num_sigs_required(self):
         '''Returns the number of sigs required. For p2pkh, it's always 1,
@@ -110,8 +123,11 @@ class Script:
         if sig_type == 'p2pkh sig':
             return 1
         elif sig_type == 'p2sh sig':
-            op_code = OP_CODES[self.elements[-1][0]]
-            return int(op_code[3:])
+            if len(self.elements) > 2:
+                op_code = OP_CODES[self.elements[-1][0]]
+                return int(op_code[3:])
+            else:
+                return 1
         else:
             raise RuntimeError('script type needs to be p2pkh sig or p2sh sig')
 
@@ -120,7 +136,7 @@ class Script:
         if sig_type == 'p2sh sig':
             return self.elements[-1]
         else:
-            raise RuntimeError('script type needs to be p2sh sig')
+            return
 
     def address(self, prefix=b'\x00'):
         '''Returns the address corresponding to the script'''

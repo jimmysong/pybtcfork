@@ -6,8 +6,6 @@ import hashlib
 
 from helper import (
     decode_base58,
-    double_sha256,
-    encode_base58,
     encode_base58_checksum,
     hash160,
     p2pkh_script
@@ -275,14 +273,14 @@ class S256Point(Point):
     def address(self, compressed=True, prefix=b'\x00'):
         '''Returns the address string'''
         h160 = self.h160(compressed)
-        # raw is hash 160 prepended w/ b'\x00' for mainnet, b'\x6f' for testnet
-        raw = prefix + h160
-        # checksum is first 4 bytes of double_sha256 of raw
-        checksum = double_sha256(raw)[:4]
-        # encode_base58 the raw + checksum
-        address = encode_base58(raw+checksum)
-        # return as a string, you can use .decode('ascii') to do this.
-        return address.decode('ascii')
+        return encode_base58_checksum(prefix + h160)
+
+    def segwit_redeem_script(self):
+        return b'\x16\x00\x14' + self.h160(True)
+
+    def segwit_address(self, prefix=b'\x05'):
+        address_bytes = hash160(self.segwit_redeem_script()[1:])
+        return encode_base58_checksum(prefix + address_bytes)
 
     def verify(self, z, sig):
         # remember sig.r and sig.s are the main things we're checking
@@ -424,7 +422,12 @@ class PrivateKey:
         # Signature(r, s)
         return Signature(r, s)
 
-    def wif(self, prefix=b'\x80'):
+    def wif(self, prefix=None):
+        if prefix is None:
+            if self.testnet:
+                prefix = b'\xef'
+            else:
+                prefix = b'\x80'
         # convert the secret from integer to a 32-bytes in big endian using
         # num.to_bytes(32, 'big')
         secret_bytes = self.secret.to_bytes(32, 'big')
@@ -435,6 +438,25 @@ class PrivateKey:
             suffix = b''
         # encode_base58_checksum the whole thing
         return encode_base58_checksum(prefix + secret_bytes + suffix)
+
+    def address(self, compressed=True, prefix=None):
+        if prefix is None:
+            if self.testnet:
+                prefix = b'\x6f'
+            else:
+                prefix = b'\x00'
+        return self.point.address(compressed=compressed, prefix=prefix)
+
+    def segwit_redeem_script(self):
+        return self.point.segwit_redeem_script()
+
+    def segwit_address(self, prefix=None):
+        if prefix is None:
+            if self.testnet:
+                prefix = b'\xc4'
+            else:
+                prefix = b'\x05'
+        return self.point.segwit_address(prefix=prefix)
 
     @classmethod
     def parse(cls, wif):
