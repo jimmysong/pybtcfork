@@ -132,10 +132,10 @@ class Tx(LibBitcoinClient):
             block_height = little_endian_to_int(response[37:41])
             if kind == 0:
                 value = little_endian_to_int(response[41:49])
-                if at_block_height is None or block_height <= at_block_height:
+                if at_block_height is None or block_height < at_block_height:
                     receives.append([prev_tx, prev_index, value])
             else:
-                if at_block_height is None or block_height <= at_block_height:
+                if at_block_height is None or block_height < at_block_height:
                     spent.add(little_endian_to_int(response[41:49]))
             response = response[49:]
         utxos = []
@@ -174,16 +174,18 @@ class Tx(LibBitcoinClient):
             priv_key = PrivateKey.parse(wif)
             addr = priv_key.point.address(priv_key.compressed, prefix=prefix)
             # look up utxos for each address
-            utxos = cls.fetch_address_utxos(addr)
             address_data = cls.get_address_data(addr)
             script_pubkey = address_data['script_pubkey']
-            priv_lookup[script_pubkey.serialize()] = priv_key
+            spk = script_pubkey.serialize()
+            priv_lookup[spk] = priv_key
+        if not utxos:
+            raise RuntimeError('fetch utxos first')
         for serialized_script_pubkey, prev_tx, prev_index, value in utxos:
-            tx_ins.append(TxIn(prev_tx, prev_index, b'', sequence, value, serialized_script_pubkey))
+            tx_ins.append(TxIn(prev_tx, prev_index, b'', sequence, value=value, script_pubkey=serialized_script_pubkey))
             total += value
         num_tx_ins = len(tx_ins)
         if num_tx_ins == 0:
-            return
+            raise RuntimeError('nothing to spend')
         script_pubkey = destination_address_data['script_pubkey']
         tx_out = TxOut(total - fee, script_pubkey.serialize())
         tx = cls(cls.default_version, tx_ins, [tx_out], 0, testnet=testnet)
@@ -247,6 +249,7 @@ class Tx(LibBitcoinClient):
         if total - fee < 0:
             return
         script_pubkey = destination_address_data['script_pubkey']
+        print('{}: {} to {}'.format(cls, total - fee, destination_addr))
         tx_out = TxOut(total - fee, script_pubkey.serialize())
         tx = cls(cls.default_version, tx_ins, [tx_out], 0, testnet=testnet)
         for index, tx_in in enumerate(tx_ins):
@@ -695,6 +698,14 @@ class BTFTx(BCHTx):
     fork_id = 70 << 8
     p2pkh_prefixes = (0x24, 0x60)
     p2sh_prefixes = (0x28, 0x65)
+
+
+
+class BTWTx(BCHTx):
+    fork_block = 499777
+    fork_id = 87 << 8
+    p2pkh_prefixes = (0x49, 0x87)
+    p2sh_prefixes = (0x1f, 0x59)
 
 
 class BCDTx(ForkTx):
