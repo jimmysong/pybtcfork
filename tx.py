@@ -92,7 +92,7 @@ class Tx(LibBitcoinClient):
         elif prefix in cls.p2sh_prefixes:
             script_pubkey = Script.parse(p2sh_script(h160))
         else:
-            raise RuntimeError('unknown type of address {}'.format(addr))
+            raise RuntimeError('unknown type of address {} {}'.format(addr, prefix))
         return {
             'testnet': testnet,
             'h160': h160,
@@ -103,8 +103,6 @@ class Tx(LibBitcoinClient):
     def fetch_address_utxos(cls, address, at_block_height=None):
         # grab all unspent transaction outputs as of block block_height
         # if block_height is None, we include all utxos
-        if address in cls.cache:
-            return cls.cache[address]
         address_data = cls.get_address_data(address)
         serialized_script_pubkey = address_data['script_pubkey'].serialize()
         socket = cls.get_socket(address_data['testnet'])
@@ -147,7 +145,6 @@ class Tx(LibBitcoinClient):
             key = tx_upper_49_bits | index_lower_15_bits
             if key not in spent:
                 utxos.append([serialized_script_pubkey, prev_tx[::-1], little_endian_to_int(prev_index), value])
-        cls.cache[address] = utxos
         return utxos
 
     @classmethod
@@ -202,7 +199,7 @@ class Tx(LibBitcoinClient):
         return tx.serialize()
 
     @classmethod
-    def spend_all_tx(cls, private_keys, destination_addr, fee=540, segwit=False, utxos=None):
+    def spend_all_tx(cls, private_keys, destination_addr, fee, segwit, utxos):
         destination_address_data = cls.get_address_data(destination_addr)
         testnet = destination_address_data['testnet']
         if testnet:
@@ -254,12 +251,13 @@ class Tx(LibBitcoinClient):
         tx = cls(cls.default_version, tx_ins, [tx_out], 0, testnet=testnet)
         for index, tx_in in enumerate(tx_ins):
             private_key = priv_lookup[tx_in.script_pubkey().serialize()]
-            tx.sign_input(
+            if not tx.sign_input(
                 index,
                 private_key,
                 cls.default_hash_type,
                 compressed=private_key.compressed,
-            )
+            ):
+                raise RuntimeError('sign and verify do different things')
         if not tx.verify():
             raise RuntimeError('failed validation')
         return tx.serialize()
@@ -612,13 +610,6 @@ class B2XTx(ForkTx):
     default_hash_type = 0x21
 
 
-class BCXTx(ForkTx):
-    fork_block = 498888
-    default_hash_type = 0x11
-    p2pkh_prefixes = (0x45, 0x41, 0x00)
-    p2sh_prefixes = (0x3f, 0xc4, 0x05)
-
-
 class BCHTx(ForkTx):
     fork_block = 478558
     fork_id = 0
@@ -649,29 +640,24 @@ class BCHTx(ForkTx):
         '''Returns whether the input has a valid signature'''
         # get the relevant input
         tx_in = self.tx_ins[input_index]
-        # get the number of signatures required. This is available in tx_in.script_sig.num_sigs_required()
-        sigs_required = tx_in.script_sig.num_sigs_required()
-        # iterate over the sigs required and check each signature
-        for sig_num in range(sigs_required):
-            # get the point from the sec format
-            # get the sec_pubkey at current signature index
-            point = S256Point.parse(tx_in.sec_pubkey(index=sig_num))
-            # get the der sig and hash_type from input
-            # get the der_signature at current signature index
-            der, hash_type = tx_in.der_signature(index=sig_num)
-            # get the signature from der format
-            signature = Signature.parse(der)
-            # get the hash to sign
-            z = self.sig_hash_bip143(input_index, hash_type)
-            # use point.verify on the hash to sign and signature
-            if not point.verify(z, signature):
-                return False
+        # get the sec_pubkey at current signature index
+        point = S256Point.parse(tx_in.sec_pubkey())
+        # get the der sig and hash_type from input
+        # get the der_signature at current signature index
+        der, hash_type = tx_in.der_signature()
+        # get the signature from der format
+        signature = Signature.parse(der)
+        # get the hash to sign
+        z = self.sig_hash_bip143(input_index, hash_type)
+        # use point.verify on the hash to sign and signature
+        if not point.verify(z, signature):
+            return False
         return True
 
     def sign_input(self, input_index, private_key, hash_type, compressed=True):
         '''Signs the input using the private key'''
         # get the hash to sign
-        z = self.sig_hash_bip143(input_index, hash_type | self.fork_id)
+        z = self.sig_hash_bip143(input_index, hash_type)
         # get der signature of z from private key
         der = private_key.sign(z).der()
         # append the hash_type to der (use bytes([hash_type]))
@@ -686,18 +672,54 @@ class BCHTx(ForkTx):
         return self.verify_input(input_index)
 
     def sign(self, private_key, compressed=True):
-        hash_type = SIGHASH_ALL
+        hash_type = self.default_hash_type
         for i in range(len(self.tx_ins)):
-            if not self.sign_input(i, private_key,
-                                   0x40 | hash_type, compressed=compressed):
+            if not self.sign_input(
+                    i, private_key, hash_type, compressed=compressed):
                 raise RuntimeError('signing failed')
 
 
 class BTGTx(BCHTx):
     fork_block = 491407
     fork_id = 79 << 8
-    p2pkh_prefixes = (0x26, 0x6f)
-    p2sh_prefixes = (0x17, 0xc4)
+    p2pkh_prefixes = (0x26, 0x6f, 0x00)
+    p2sh_prefixes = (0x17, 0xc4, 0x05)
+
+
+class BCXTx(BCHTx):
+    fork_block = 498888
+    default_hash_type = 0x11
+    p2pkh_prefixes = (0x4b, 0x41, 0x00)
+    p2sh_prefixes = (0x3f, 0xc4, 0x05)
+    
+    def sign_input(self, input_index, private_key, hash_type, compressed=True):
+        '''Signs the input using the private key'''
+        # get the hash to sign
+        z = self.sig_hash_bip143(input_index, hash_type)
+        # get der signature of z from private key
+        der = private_key.sign(z).der()
+        # append the hash_type to der (use bytes([hash_type]))
+        sig = der + bytes([hash_type])
+        # calculate the sec
+        sec = private_key.point.sec(compressed=compressed)
+        tx_in = self.tx_ins[input_index]
+        if tx_in.is_segwit():
+            tx_in.script_sig = Script([tx_in.redeem_script()])
+            tx_in.witness_program = Script([2, sig, sec]).serialize()
+        else:
+            # initialize a new script with [sig, sec] as the elements
+            script_sig = Script([sig, sec])
+            # change input's script_sig to new script
+            tx_in.script_sig = script_sig
+        # return whether sig is valid using self.verify_input
+        return self.verify_input(input_index)
+
+    def sign(self, private_key, compressed=True):
+        hash_type = self.default_hash_type
+        for i in range(len(self.tx_ins)):
+            if not self.sign_input(
+                    i, private_key, hash_type, compressed=compressed):
+                raise RuntimeError('signing failed')
 
 
 class BTFTx(BCHTx):

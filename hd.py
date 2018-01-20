@@ -188,12 +188,8 @@ class HDPrivateKey(LibBitcoinClient):
 
     @classmethod
     def spend_all_tx_from_mnemonic(
-            cls, coin_class, mnemonic, password=b'', path=b'm/44\'/0\'',
-            destination=None, fee=540, segwit=False, path_utxos=None):
-        if destination is None:
-            raise RuntimeError('you must define a destination')
-        if path_utxos is None:
-            raise RuntimeError('you must input path_utxos')
+            cls, coin_class, mnemonic, password, path,
+            destination, fee, segwit, path_utxos):
         hd_priv_key = cls.from_mnemonic(mnemonic, password, path)
         paths = []
         utxos = []

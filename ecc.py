@@ -439,13 +439,13 @@ class PrivateKey:
         # encode_base58_checksum the whole thing
         return encode_base58_checksum(prefix + secret_bytes + suffix)
 
-    def address(self, compressed=True, prefix=None):
+    def address(self, prefix=None):
         if prefix is None:
             if self.testnet:
                 prefix = b'\x6f'
             else:
                 prefix = b'\x00'
-        return self.point.address(compressed=compressed, prefix=prefix)
+        return self.point.address(compressed=self.compressed, prefix=prefix)
 
     def segwit_redeem_script(self):
         return self.point.segwit_redeem_script()
