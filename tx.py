@@ -684,13 +684,6 @@ class BTGTx(BCHTx):
     fork_id = 79 << 8
     p2pkh_prefixes = (0x26, 0x6f, 0x00)
     p2sh_prefixes = (0x17, 0xc4, 0x05)
-
-
-class BCXTx(BCHTx):
-    fork_block = 498888
-    default_hash_type = 0x11
-    p2pkh_prefixes = (0x4b, 0x41, 0x00)
-    p2sh_prefixes = (0x3f, 0xc4, 0x05)
     
     def sign_input(self, input_index, private_key, hash_type, compressed=True):
         '''Signs the input using the private key'''
@@ -714,12 +707,12 @@ class BCXTx(BCHTx):
         # return whether sig is valid using self.verify_input
         return self.verify_input(input_index)
 
-    def sign(self, private_key, compressed=True):
-        hash_type = self.default_hash_type
-        for i in range(len(self.tx_ins)):
-            if not self.sign_input(
-                    i, private_key, hash_type, compressed=compressed):
-                raise RuntimeError('signing failed')
+
+class BCXTx(BTGTx):
+    fork_block = 498888
+    default_hash_type = 0x11
+    p2pkh_prefixes = (0x4b, 0x41, 0x00)
+    p2sh_prefixes = (0x3f, 0xc4, 0x05)
 
 
 class BTFTx(BCHTx):
