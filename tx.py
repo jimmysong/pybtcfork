@@ -612,6 +612,13 @@ class B2XTx(ForkTx):
     default_hash_type = 0x21
 
 
+class BCXTx(ForkTx):
+    fork_block = 498888
+    default_hash_type = 0x11
+    p2pkh_prefixes = (0x45, 0x41, 0x00)
+    p2sh_prefixes = (0x3f, 0xc4, 0x05)
+
+
 class BCHTx(ForkTx):
     fork_block = 478558
     fork_id = 0
