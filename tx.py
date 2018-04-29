@@ -1,4 +1,3 @@
-from binascii import hexlify, unhexlify
 from io import BytesIO
 
 import random
@@ -49,10 +48,11 @@ class Tx(LibBitcoinClient):
     default_version = 1
     default_hash_type = 1
     cache = {}
-    p2pkh_prefixes = (0x00, 0x6f)
-    p2sh_prefixes = (0x05, 0xc4)
-    testnet_prefixes = (0x6f, 0xc4)
+    p2pkh_prefixes = (b'\x00', b'\x6f')
+    p2sh_prefixes = (b'\x05', b'\xc4')
+    testnet_prefixes = (b'\x6f', b'\xc4')
     scale = 100000000
+    num_bytes = 25
 
     def __init__(self, version, tx_ins, tx_outs, locktime, testnet=False):
         self.version = version
@@ -72,7 +72,7 @@ class Tx(LibBitcoinClient):
         for tx_out in self.tx_outs:
             tx_outs += tx_out.__repr__() + '\n'
         return '{}\nversion: {}\ntx_ins:\n{}\ntx_outs:\n{}\nlocktime: {}\n'.format(
-            hexlify(self.hash()).decode('ascii'),
+            self.hash().hex(),
             self.version,
             tx_ins,
             tx_outs,
@@ -82,11 +82,14 @@ class Tx(LibBitcoinClient):
     def hash(self):
         return double_sha256(self.serialize())[::-1]
 
+    def id(self):
+        return self.hash().hex()
+
     @classmethod
     def get_address_data(cls, addr):
-        b58 = decode_base58(addr)
-        prefix = b58[0]
-        h160 = b58[1:]
+        b58 = decode_base58(addr, num_bytes=cls.num_bytes)
+        prefix = b58[:-20]
+        h160 = b58[-20:]
         testnet = prefix in cls.testnet_prefixes
         if prefix in cls.p2pkh_prefixes:
             script_pubkey = Script.parse(p2pkh_script(h160))
@@ -131,10 +134,10 @@ class Tx(LibBitcoinClient):
             block_height = little_endian_to_int(response[37:41])
             if kind == 0:
                 value = little_endian_to_int(response[41:49])
-                if at_block_height is None or block_height < at_block_height:
+                if at_block_height is None or block_height <= at_block_height:
                     receives.append([prev_tx, prev_index, value])
             else:
-                if at_block_height is None or block_height < at_block_height:
+                if at_block_height is None or block_height <= at_block_height:
                     spent.add(little_endian_to_int(response[41:49]))
             response = response[49:]
         utxos = []
@@ -161,9 +164,9 @@ class Tx(LibBitcoinClient):
         destination_address_data = cls.get_address_data(destination_addr)
         testnet = destination_address_data['testnet']
         if testnet:
-            prefix = bytes([cls.testnet_prefixes[0]])
+            prefix = cls.testnet_prefixes[0]
         else:
-            prefix = bytes([cls.p2pkh_prefixes[0]])
+            prefix = cls.p2pkh_prefixes[0]
         tx_ins = []
         sequence = 0xffffffff
         priv_lookup = {}
@@ -214,14 +217,14 @@ class Tx(LibBitcoinClient):
         testnet = destination_address_data['testnet']
         if testnet:
             if segwit:
-                prefix = bytes([cls.p2sh_prefixes[1]])
+                prefix = cls.p2sh_prefixes[1]
             else:
-                prefix = bytes([cls.p2pkh_prefixes[1]])
+                prefix = cls.p2pkh_prefixes[1]
         else:
             if segwit:
-                prefix = bytes([cls.p2sh_prefixes[0]])
+                prefix = cls.p2sh_prefixes[0]
             else:
-                prefix = bytes([cls.p2pkh_prefixes[0]])
+                prefix = cls.p2pkh_prefixes[0]
         tx_ins = []
         sequence = 0xffffffff
         priv_lookup = {}
@@ -591,9 +594,13 @@ class Tx(LibBitcoinClient):
         return True
 
     def sign(self, private_key, compressed=True):
-        hash_type = SIGHASH_ALL
         for i in range(len(self.tx_ins)):
-            if not self.sign_input(i, private_key, hash_type, compressed=compressed):
+            if not self.sign_input(
+                    i,
+                    private_key,
+                    self.default_hash_type,
+                    compressed=compressed,
+            ):
                 raise RuntimeError('signing failed')
 
 
@@ -612,7 +619,7 @@ class BTXTx(Tx):
         print(result)
         utxos = []
         for item in result['unspent_outputs']:
-            utxos.append([serialized_script_pubkey, unhexlify(item['tx_hash']), item['tx_ouput_n'], int(item['value'])])
+            utxos.append([serialized_script_pubkey, bytes.fromhex(item['tx_hash']), item['tx_ouput_n'], int(item['value'])])
         return utxos
 
 
@@ -624,11 +631,88 @@ class ForkTx(Tx):
         return super().fetch_address_utxos(address, at_block_height=cls.fork_block)
 
 
+class BTCPTx(Tx):
+    p2pkh_prefixes = (b'\x13\x25',)
+    p2sh_prefixes = (b'\x13\xaf',)
+    default_hash_type = 0x41
+    fork_id = 42 << 8
+    num_bytes = 26
+
+    @classmethod
+    def fetch_address_utxos(cls, address):
+        url = 'https://explorer.btcprivate.org/api/addr/{}/utxo'.format(
+            address)
+        result = requests.get(url).json()
+        address_data = cls.get_address_data(address)
+        serialized_script_pubkey = address_data['script_pubkey'].serialize()
+        utxos = []
+        for item in result:
+            utxos.append([serialized_script_pubkey, bytes.fromhex(item['txid']), item['vout'], int(item['satoshis'])])
+        return utxos
+        
+
+    def sig_hash(self, input_index, hash_type):
+        '''Returns the integer representation of the hash that needs to get
+        signed for index input_index'''
+        # create a transaction serialization where
+        # all the input script_sigs are blanked out
+        alt_tx_ins = []
+        for tx_in in self.tx_ins:
+            alt_tx_ins.append(TxIn(
+                prev_tx=tx_in.prev_tx,
+                prev_index=tx_in.prev_index,
+                script_sig=b'',
+                sequence=tx_in.sequence,
+                value=tx_in.value(),
+                script_pubkey=tx_in.script_pubkey().serialize(),
+            ))
+        # replace the input's scriptSig with the scriptPubKey
+        signing_input = alt_tx_ins[input_index]
+        signing_input.script_sig = signing_input.script_pubkey(self.testnet)
+        alt_tx = self.__class__(
+            version=self.version,
+            tx_ins=alt_tx_ins,
+            tx_outs=self.tx_outs,
+            locktime=self.locktime,
+        )
+        # add the hash_type
+        result = alt_tx.serialize()
+        result += int_to_little_endian(hash_type | self.fork_id, 4)
+        return int.from_bytes(double_sha256(result), 'big')
+
+    def sign_input(self, input_index, private_key, hash_type, compressed=True, redeem_script=None):
+        '''Signs the input using the private key'''
+        # get the hash to sign
+        tx_in = self.tx_ins[input_index]
+        if redeem_script:
+            h160 = Script.parse(redeem_script).elements[1]
+            tx_in._script_pubkey = Script.parse(p2pkh_script(h160))
+        z = self.sig_hash(input_index, hash_type)
+        # get der signature of z from private key
+        der = private_key.sign(z).der()
+        # append the hash_type to der (use bytes([hash_type]))
+        sig = der + bytes([hash_type])
+        # calculate the sec
+        sec = private_key.point.sec(compressed=compressed)
+        if redeem_script:
+            tx_in.script_sig = Script([sig, sec, redeem_script])
+        else:
+            tx_in.script_sig = Script([sig, sec])
+        return self.verify_input(input_index)
+
+
 class B2XTx(ForkTx):
     fork_block = 501451
+    fork_id = 0
     default_hash_type = 0x21
 
 
+class BTVTx(ForkTx):
+    fork_block = 505050
+    fork_id = 0
+    default_hash_type = 0x65
+
+    
 class BCHTx(ForkTx):
     fork_block = 478558
     fork_id = 0
@@ -676,7 +760,7 @@ class BCHTx(ForkTx):
             return False
         return True
 
-    def sign_input(self, input_index, private_key, hash_type, compressed=True):
+    def sign_input(self, input_index, private_key, hash_type, compressed=True, redeem_script=None):
         '''Signs the input using the private key'''
         # get the hash to sign
         z = self.sig_hash_bip143(input_index, hash_type)
@@ -704,8 +788,8 @@ class BCHTx(ForkTx):
 class BTGTx(BCHTx):
     fork_block = 491407
     fork_id = 79 << 8
-    p2pkh_prefixes = (0x26, 0x6f, 0x00)
-    p2sh_prefixes = (0x17, 0xc4, 0x05)
+    p2pkh_prefixes = (b'\x26', b'\x6f', b'\x00')
+    p2sh_prefixes = (b'\x17', b'\xc4', b'\x05')
     
     def sign_input(self, input_index, private_key, hash_type, compressed=True, redeem_script=None):
         '''Signs the input using the private key'''
@@ -732,30 +816,33 @@ class BTGTx(BCHTx):
 
 class BCXTx(BTGTx):
     fork_block = 498888
+    default_version = 2
     default_hash_type = 0x11
+    fork_id = 0
     p2pkh_prefixes = (0x4b, 0x41, 0x00)
     p2sh_prefixes = (0x3f, 0xc4, 0x05)
     scale = 10000
 
 
-class BTFTx(BCHTx):
+class BTFTx(BTGTx):
     fork_block = 500000
     fork_id = 70 << 8
     p2pkh_prefixes = (0x24, 0x60)
     p2sh_prefixes = (0x28, 0x65)
 
 
-class BTWTx(BCHTx):
+class BTWTx(BTGTx):
     fork_block = 499777
     fork_id = 87 << 8
     p2pkh_prefixes = (0x49, 0x87)
     p2sh_prefixes = (0x1f, 0x59)
+    scale = 10000
 
 
 class BCDTx(ForkTx):
     fork_block = 495866
     default_version = 12
-    default_block_hash = unhexlify('c51159637a85160ed5c726fb0df68e14352b495e4c57444d4d427bbc68db0551')
+    default_block_hash = bytes.fromhex('c51159637a85160ed5c726fb0df68e14352b495e4c57444d4d427bbc68db0551')
     scale = 10000000
 
     def __init__(self, version, tx_ins, tx_outs, locktime, prev_block_hash=None, testnet=False):
@@ -999,7 +1086,7 @@ class TxIn(LibBitcoinClient):
             self._script_pubkey = Script.parse(script_pubkey)
 
     def __repr__(self):
-        return '{}:{}'.format(hexlify(self.prev_tx).decode('ascii'), self.prev_index)
+        return '{}:{}'.format(self.prev_tx.hex(), self.prev_index)
 
     @classmethod
     def parse(cls, s):

@@ -50,11 +50,11 @@ def decode_base58(s, num_bytes=25, strip_leading_zeros=False):
     if strip_leading_zeros:
         while combined[0] == 0:
             combined = combined[1:]
-    checksum = combined[-4:]
-    if double_sha256(combined[:-4])[:4] != checksum:
+    payload, checksum = combined[:-4], combined[-4:]
+    if double_sha256(payload)[:4] != checksum:
         raise ValueError('bad address: {} {}'.format(
             checksum, double_sha256(combined)[:4]))
-    return combined[:-4]
+    return payload
 
 
 def p2pkh_script(h160):

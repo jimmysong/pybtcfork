@@ -4,11 +4,12 @@ from unittest import TestCase
 
 from ecc import PrivateKey, S256Point, Signature
 from helper import (
+    hash160,
     p2pkh_script,
     SIGHASH_ALL,
 )
 from script import Script
-from tx import Tx, TxIn, TxOut, BCDTx, BTGTx, SBTCTx, BCHTx
+from tx import Tx, TxIn, TxOut, BCDTx, BTGTx, SBTCTx, BCHTx, BTCPTx
 
 
 class TxTest(TestCase):
@@ -296,3 +297,13 @@ class TxTest(TestCase):
         for _, prev_tx, prev_index, value in utxos:
             total += value
         self.assertTrue(total > 0)
+
+    def test_btcp(self):
+        raw = bytes.fromhex('0100000001d5b2052ed9921a83228a9412074425f1b9878588c57cf52961b898d4df345aeb000000008248304502210094d1109cd76909af898aa68c7344a64e18fb7e7a041744a6eecb189f6bdf343802205235353c2fa55c8b087f912511b74350754eb337dbab3b693d1c1232e471b6034121023ec8c89df7dd593314119de90a5535ab8904bef24b3bbd7e459b8cf30a9f49321600148b8f8534e4164c763bec8e674391eadb4ab82903ffffffff02709ebd79000000001976a914e75092ac5b36c1af6f90913729a6353cc5aca9c488ace0516806000000001976a914b3b255028648e151b3e419ab6c5b2e9656ba363988ac00000000')
+        stream = BytesIO(raw)
+        tx = BTCPTx.parse(stream)
+        tx.tx_ins[0]._value = 2150000000
+        redeem_script = Script.parse(bytes.fromhex('1600148b8f8534e4164c763bec8e674391eadb4ab82903'))
+        h160 = Script.parse(redeem_script.elements[0]).elements[1]
+        tx.tx_ins[0]._script_pubkey = Script.parse(p2pkh_script(h160))
+        self.assertTrue(tx.verify())

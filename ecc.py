@@ -439,6 +439,9 @@ class PrivateKey:
         # encode_base58_checksum the whole thing
         return encode_base58_checksum(prefix + secret_bytes + suffix)
 
+    def h160(self):
+        return self.point.h160(compressed=self.compressed)
+
     def address(self, prefix=None):
         if prefix is None:
             if self.testnet:

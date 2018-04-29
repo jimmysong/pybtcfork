@@ -357,9 +357,9 @@ class HDPublicKey:
     def parse(cls, xpub):
         raw = decode_base58(xpub, num_bytes=82)
         version = raw[:4]
-        if version == unhexlify('043587CF'):
+        if version.hex() in ('043587cf',):
             testnet = True
-        elif version == unhexlify('0488B21E'):
+        elif version.hex() in ('0488b21e', '049d7cb2'):
             testnet = False
         else:
             raise RuntimeError('not an xpub: {}'.format(xpub))
@@ -439,6 +439,7 @@ class HDPublicKey:
                     addr = self.child(i).address()
                 addr_lookup[addr] = i
                 addrs.append(addr)
+            print(addrs)
             data = requests.get(
                 'http://blockchain.info/multiaddr?active={}'.format(
                     '|'.join(addrs))).json()
