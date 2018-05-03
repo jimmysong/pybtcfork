@@ -1,3 +1,6 @@
+# THIS REPOSITORY COMES WITH ZERO GUARANTEES! USE AT YOUR OWN RISK!
+
+
 # Pre-Requisites
 
 Install python 3.5 or above on your machine:
@@ -22,10 +25,10 @@ Install virtualenv:
 
     $ pip install virtualenv
 
-# Download hardforkhelp requirements
+# Download pybtcfork requirements
 
-    $ git clone https://github.com/jimmysong/hardforkhelp
-    $ cd hardforkhelp
+    $ git clone https://github.com/jimmysong/pybtcfork
+    $ cd pybtcfork
 
 Linux/OSX:
 
@@ -48,3 +51,5 @@ Windows:
 # Run jupyter notebook
 
     (.venv) $ jupyter notebook
+
+Go to the fork.ipynb file to split your forked coins.
