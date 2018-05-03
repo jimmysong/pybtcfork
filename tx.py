@@ -53,6 +53,9 @@ class Tx(LibBitcoinClient):
     testnet_prefixes = (b'\x6f', b'\xc4')
     scale = 100000000
     num_bytes = 25
+    fee = 2500
+    insight = 'https://btc-bitcore6.trezor.io/api'
+    seeds = None
 
     def __init__(self, version, tx_ins, tx_outs, locktime, testnet=False):
         self.version = version
@@ -209,7 +212,7 @@ class Tx(LibBitcoinClient):
             )
         if not tx.verify():
             raise RuntimeError('failed validation')
-        return tx.serialize()
+        return tx
 
     @classmethod
     def spend_all_tx(cls, private_keys, destination_addr, fee, segwit, utxos):
@@ -259,7 +262,7 @@ class Tx(LibBitcoinClient):
         if total - fee < 0:
             return
         script_pubkey = destination_address_data['script_pubkey']
-        print('{}: {} to {}'.format(cls, total - fee, destination_addr))
+        print('{}: {} to {}'.format(cls, (total - fee) / cls.scale, destination_addr))
         tx_out = TxOut(total - fee, script_pubkey.serialize())
         tx = cls(cls.default_version, tx_ins, [tx_out], 0, testnet=testnet)
         for index, tx_in in enumerate(tx_ins):
@@ -279,7 +282,7 @@ class Tx(LibBitcoinClient):
                 raise RuntimeError('sign and verify do different things')
         if not tx.verify():
             raise RuntimeError('failed validation')
-        return tx.serialize()
+        return tx
 
     @classmethod
     def parse(cls, s):
@@ -603,10 +606,24 @@ class Tx(LibBitcoinClient):
             ):
                 raise RuntimeError('signing failed')
 
+    def send_insight(self):
+        if self.insight is None:
+            return
+        url = '{}/tx/send'.format(self.insight)
+        data = dumps({'rawtx': hex_tx})
+        r = requests.post(url, data=data, headers={'Content-Type': 'application/json'})
+        return r.text
+
+
 
 class BTXTx(Tx):
     fork_block = 492820
     default_version = 2
+    fee = 200000
+    magic = b'\xf9\xbe\xb4\xd9'
+    port = 8555
+    seeds = ("37.120.190.76", "37.120.186.85", "185.194.140.60", "188.71.223.206", "185.194.142.122")
+    insight = None
 
     @classmethod
     def fetch_address_utxos(cls, address):
@@ -632,11 +649,13 @@ class ForkTx(Tx):
 
 
 class BTCPTx(Tx):
-    p2pkh_prefixes = (b'\x13\x25',)
-    p2sh_prefixes = (b'\x13\xaf',)
     default_hash_type = 0x41
     fork_id = 42 << 8
+    p2pkh_prefixes = (b'\x13\x25',)
+    p2sh_prefixes = (b'\x13\xaf',)
     num_bytes = 26
+    fee = 20000
+    insight = 'https://explorer.btcprivate.org/api'
 
     @classmethod
     def fetch_address_utxos(cls, address):
@@ -704,19 +723,41 @@ class BTCPTx(Tx):
 class B2XTx(ForkTx):
     fork_block = 501451
     fork_id = 0
-    default_hash_type = 0x21
-
+    default_hash_type = 0x31
+    fee = 20000
+    magic = b'\xf4\xb2\xb5\xd8'
+    port = 8333
+    seeds = ("node1.b2x-segwit.io", "node2.b2x-segwit.io", "node3.b2x-segwit.io")
+    insight = None
 
 class BTVTx(ForkTx):
     fork_block = 505050
     fork_id = 0
     default_hash_type = 0x65
+    fee = 20000
+    magic = b'\xf9\x50\x50\x50'
+    port = 8333
+    seeds = ("seed1.bitvote.one", "seed2.bitvote.one", "seed3.bitvote.one")
+    insight = None
 
-    
+
+class LBTCTx(ForkTx):
+    fork_block = 499999
+    fork_id = 0
+    magic = b'\xf9\xbe\xb3\xd7'
+    port = 9333
+    seeds = ("seed9.lbtc.io", "seed8.lbtc.io", "seed10.lbtc.io")
+    default_version = 0xff01
+    fee = 200000
+    insight = None
+
+
 class BCHTx(ForkTx):
     fork_block = 478558
     fork_id = 0
     default_hash_type = 0x41
+    insight = 'https://bch-bitcore2.trezor.io/api'
+    fee = 540
 
     def sig_hash_preimage_bip143(self, input_index, hash_type, redeem_script=None):
         '''Returns the integer representation of the hash that needs to get
@@ -790,7 +831,9 @@ class BTGTx(BCHTx):
     fork_id = 79 << 8
     p2pkh_prefixes = (b'\x26', b'\x6f', b'\x00')
     p2sh_prefixes = (b'\x17', b'\xc4', b'\x05')
-    
+    insight = 'https://btg-bitcore2.trezor.io/api'
+    fee = 5000
+
     def sign_input(self, input_index, private_key, hash_type, compressed=True, redeem_script=None):
         '''Signs the input using the private key'''
         # get the hash to sign
@@ -814,29 +857,66 @@ class BTGTx(BCHTx):
         return self.verify_input(input_index)
 
 
+class BCITx(BTGTx):
+    fork_block = 505083
+    fork_id = 79 << 8
+    default_hash_type = 0x41
+    p2pkh_prefixes = (b'\x66',)
+    p2sh_prefixes = (b'\x17',)
+    insight = 'https://explorer.bitcoininterest.io/api'
+    magic = b'\xed\xe4\xfe\x26'
+    port = 8331
+    seeds = ("74.208.166.57", "216.250.117.221")
+    fee = 20000
+
+class BTPTx(BTGTx):
+    fork_block = 499345
+    fork_id = 80 << 8
+    default_hash_type = 0x41
+    p2pkh_prefixes = (b'\x38',)
+    p2sh_prefixes = (b'\x05',)
+    insight = 'http://exp.btceasypay.com/insight-api'
+    fee = 20000
+    scale = 10000000
+
 class BCXTx(BTGTx):
     fork_block = 498888
     default_version = 2
     default_hash_type = 0x11
     fork_id = 0
-    p2pkh_prefixes = (0x4b, 0x41, 0x00)
-    p2sh_prefixes = (0x3f, 0xc4, 0x05)
+    p2pkh_prefixes = (b'\x4b', b'\x41', b'\x00')
+    p2sh_prefixes = (b'\x3f', b'\xc4', b'\x05')
     scale = 10000
+    magic = b'\x11\x05\xbc\xf9'
+    port = 9003
+    seeds = ("192.169.227.48", "120.92.119.221", "120.92.89.254", "120.131.5.173", "120.92.117.145", "192.169.153.174", "192.169.154.185", "166.227.117.163")
+    fee = 200000
+    insight = None
 
 
 class BTFTx(BTGTx):
     fork_block = 500000
     fork_id = 70 << 8
-    p2pkh_prefixes = (0x24, 0x60)
-    p2sh_prefixes = (0x28, 0x65)
+    p2pkh_prefixes = (b'\x24', b'\x60')
+    p2sh_prefixes = (b'\x28', b'\x65')
+    fee = 200000
+    magic = b'\xfa\xe2\xd4\xe6'
+    port = 8346
+    seeds = ("a.btf.hjy.cc", "b.btf.hjy.cc", "c.btf.hjy.cc", "d.btf.hjy.cc", "e.btf.hjy.cc", "f.btf.hjy.cc")
+    insight = None
 
 
 class BTWTx(BTGTx):
     fork_block = 499777
     fork_id = 87 << 8
-    p2pkh_prefixes = (0x49, 0x87)
-    p2sh_prefixes = (0x1f, 0x59)
+    p2pkh_prefixes = (b'\x49', b'\x87')
+    p2sh_prefixes = (b'\x1f', b'\x59')
     scale = 10000
+    fee = 200000
+    magic = b'\xf8\x62\x74\x77'
+    port = 8357
+    seeds = ("47.52.250.221", "47.91.237.5")
+    insight = None
 
 
 class BCDTx(ForkTx):
@@ -844,6 +924,11 @@ class BCDTx(ForkTx):
     default_version = 12
     default_block_hash = bytes.fromhex('c51159637a85160ed5c726fb0df68e14352b495e4c57444d4d427bbc68db0551')
     scale = 10000000
+    fee = 20000
+    magic = b'\xbd\xde\xb4\xd9'
+    port = 7117
+    seeds = ("seed1.dns.btcd.io", "seed2.dns.btcd.io", "seed3.dns.btcd.io", "seed4.dns.btcd.io", "seed5.dns.btcd.io", "seed6.dns.btcd.io")
+    insight = None
 
     def __init__(self, version, tx_ins, tx_outs, locktime, prev_block_hash=None, testnet=False):
         super().__init__(version, tx_ins, tx_outs, locktime, testnet=False)
@@ -999,6 +1084,11 @@ class SBTCTx(ForkTx):
     default_version = 2
     default_hash_type = 0x41
     sighash_append = b'\x04sbtc'
+    fee = 20000
+    magic = b'\xf9\xbe\xb4\xd9'
+    port = 8334
+    seeds = ("seed.superbtca.com", "seed.superbtca.info", "seed.superbtc.org")
+    insight = None
 
     def sig_hash_preimage_bip143(self, input_index, hash_type, redeem_script=None):
         '''Returns the integer representation of the hash that needs to get

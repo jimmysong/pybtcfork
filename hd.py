@@ -439,7 +439,6 @@ class HDPublicKey:
                     addr = self.child(i).address()
                 addr_lookup[addr] = i
                 addrs.append(addr)
-            print(addrs)
             data = requests.get(
                 'http://blockchain.info/multiaddr?active={}'.format(
                     '|'.join(addrs))).json()
