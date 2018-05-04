@@ -266,14 +266,13 @@ class HDPrivateKey(LibBitcoinClient):
         fingerprint = raw[5:9]
         child_number = int.from_bytes(raw[9:13], 'big')
         chain_code = raw[13:45]
-        private_key = PrivateKey(secret=int.from_bytes(raw[46:], 'big'))
+        private_key = PrivateKey(secret=int.from_bytes(raw[46:], 'big'), testnet=testnet)
         return cls(
             private_key=private_key,
             chain_code=chain_code,
             depth=depth,
             fingerprint=fingerprint,
             child_number=child_number,
-            testnet=testnet,
         )
 
     def child(self, index, hardened=False):
