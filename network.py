@@ -69,7 +69,7 @@ class NetworkEnvelope:
 
 class TxSender:
 
-    def __init__(self, raw_tx, host, port, magic=NETWORK_MAGIC):
+    def __init__(self, raw_tx, host, port, magic=NETWORK_MAGIC, timeout=10):
         self.raw_tx = raw_tx
         self.tx_hash = double_sha256(raw_tx)
         self.inv_payload = b'\x01' + int_to_little_endian(1, 4) + self.tx_hash
@@ -82,6 +82,7 @@ class TxSender:
         self.writer = None
         self.q = asyncio.Queue()
         self.keep_looping = True
+        self.timeout = timeout
 
     async def connect(self, loop):
         self.reader, self.writer = await asyncio.open_connection(
@@ -115,6 +116,7 @@ class TxSender:
 
     async def process_queue(self):
         print("start processing")
+        start = time.time()
         while self.keep_looping:
             envelope = await self.q.get()
             command = envelope.command.strip(b'\x00').decode('ascii')
@@ -152,3 +154,5 @@ class TxSender:
                 self.send(b'inv', self.inv_payload)
             else:
                 print(envelope)
+            if time.time()-start < self.timeout:
+                self.keep_looping = False

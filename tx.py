@@ -1,4 +1,5 @@
 from io import BytesIO
+from json import dumps
 
 import random
 import requests
@@ -610,7 +611,7 @@ class Tx(LibBitcoinClient):
         if self.insight is None:
             return
         url = '{}/tx/send'.format(self.insight)
-        data = dumps({'rawtx': hex_tx})
+        data = dumps({'rawtx': self.serialize().hex()})
         r = requests.post(url, data=data, headers={'Content-Type': 'application/json'})
         return r.text
 
@@ -730,16 +731,68 @@ class B2XTx(ForkTx):
     seeds = ("node1.b2x-segwit.io", "node2.b2x-segwit.io", "node3.b2x-segwit.io")
     insight = None
 
-class BTVTx(ForkTx):
-    fork_block = 505050
-    fork_id = 0
-    default_hash_type = 0x65
-    fee = 20000
-    magic = b'\xf9\x50\x50\x50'
-    port = 8333
-    seeds = ("seed1.bitvote.one", "seed2.bitvote.one", "seed3.bitvote.one")
-    insight = None
+    def sig_hash(self, input_index, hash_type):
+        '''Returns the integer representation of the hash that needs to get
+        signed for index input_index'''
+        # create a transaction serialization where
+        # all the input script_sigs are blanked out
+        alt_tx_ins = []
+        for tx_in in self.tx_ins:
+            alt_tx_ins.append(TxIn(
+                prev_tx=tx_in.prev_tx,
+                prev_index=tx_in.prev_index,
+                script_sig=b'',
+                sequence=tx_in.sequence,
+                value=tx_in.value(),
+                script_pubkey=tx_in.script_pubkey().serialize(),
+            ))
+        # replace the input's scriptSig with the scriptPubKey
+        signing_input = alt_tx_ins[input_index]
+        script_pubkey = signing_input.script_pubkey(self.testnet)
+        sig_type = script_pubkey.type()
+        if sig_type == 'p2pkh':
+            signing_input.script_sig = script_pubkey
+        elif sig_type == 'p2sh':
+            current_input = self.tx_ins[input_index]
+            signing_input.script_sig = Script.parse(
+                current_input.redeem_script())
+        else:
+            raise RuntimeError('not a valid sig_type: {}'.format(sig_type))
+        alt_tx = self.__class__(
+            version=self.version,
+            tx_ins=alt_tx_ins,
+            tx_outs=self.tx_outs,
+            locktime=self.locktime,
+        )
+        # add the hash_type
+        result = alt_tx.serialize()
+        result += int_to_little_endian(hash_type << 1, 4)
+        return int.from_bytes(double_sha256(result), 'big')
 
+    def sig_hash_preimage_bip143(self, input_index, hash_type, redeem_script=None):
+        '''Returns the integer representation of the hash that needs to get
+        signed for index input_index'''
+        tx_in = self.tx_ins[input_index]
+        # per BIP143 spec
+        s = int_to_little_endian(self.version, 4)
+        s += self.hash_prevouts() + self.hash_sequence()
+        s += tx_in.prev_tx[::-1] + int_to_little_endian(tx_in.prev_index, 4)
+        if tx_in.is_segwit() or redeem_script:
+            if redeem_script:
+                h160 = redeem_script[-20:]
+            else:
+                h160 = tx_in.redeem_script()[-20:]
+            ser = p2pkh_script(h160)
+        else:
+            ser = tx_in.script_pubkey().serialize()
+        s += bytes([len(ser)]) + ser  # script pubkey
+        s += int_to_little_endian(tx_in.value(), 8)
+        s += int_to_little_endian(tx_in.sequence, 4)
+        s += self.hash_outputs()
+        s += int_to_little_endian(self.locktime, 4)
+        s += int_to_little_endian(hash_type << 1, 4)
+        return s
+    
 
 class LBTCTx(ForkTx):
     fork_block = 499999
@@ -879,6 +932,125 @@ class BTPTx(BTGTx):
     fee = 20000
     scale = 10000000
 
+    
+class BTVTx(BTGTx):
+    fork_block = 505050
+    fork_id = 50 << 8
+    default_hash_type = 0x41
+    fee = 20000
+    magic = b'\xf9\x50\x50\x50'
+    port = 8333
+    seeds = ("seed1.bitvote.one", "seed2.bitvote.one", "seed3.bitvote.one")
+    insight = 'https://block.bitvote.one/insight-api'
+
+    def sig_hash(self, input_index, hash_type):
+        '''Returns the integer representation of the hash that needs to get
+        signed for index input_index'''
+        # create a transaction serialization where
+        # all the input script_sigs are blanked out
+        alt_tx_ins = []
+        for tx_in in self.tx_ins:
+            alt_tx_ins.append(TxIn(
+                prev_tx=tx_in.prev_tx,
+                prev_index=tx_in.prev_index,
+                script_sig=b'',
+                sequence=tx_in.sequence,
+                value=tx_in.value(),
+                script_pubkey=tx_in.script_pubkey().serialize(),
+            ))
+        # replace the input's scriptSig with the scriptPubKey
+        signing_input = alt_tx_ins[input_index]
+        script_pubkey = signing_input.script_pubkey(self.testnet)
+        sig_type = script_pubkey.type()
+        if sig_type == 'p2pkh':
+            signing_input.script_sig = script_pubkey
+        elif sig_type == 'p2sh':
+            current_input = self.tx_ins[input_index]
+            signing_input.script_sig = Script.parse(
+                current_input.redeem_script())
+        else:
+            raise RuntimeError('not a valid sig_type: {}'.format(sig_type))
+        alt_tx = self.__class__(
+            version=self.version,
+            tx_ins=alt_tx_ins,
+            tx_outs=self.tx_outs,
+            locktime=self.locktime,
+        )
+        # add the hash_type
+        result = alt_tx.serialize()
+        result += int_to_little_endian(hash_type | self.fork_id, 4)
+        return int.from_bytes(double_sha256(result), 'big')
+
+    def sign_input(self, input_index, private_key, hash_type, compressed=True, redeem_script=None):
+        '''Signs the input using the private key'''
+        # get the hash to sign
+        tx_in = self.tx_ins[input_index]
+        if redeem_script:
+            z = self.sig_hash_bip143(input_index, hash_type, redeem_script=redeem_script)
+        else:
+            z = self.sig_hash(input_index, hash_type)
+        # get der signature of z from private key
+        der = private_key.sign(z).der()
+        # append the hash_type to der (use bytes([hash_type]))
+        sig = der + bytes([hash_type])
+        # calculate the sec
+        sec = private_key.point.sec(compressed=compressed)
+        if redeem_script:
+            # witness program 0
+            tx_in.script_sig = Script([redeem_script])
+            tx_in.witness_program = Script([2, sig, sec]).serialize()
+        else:
+            # initialize a new script with [sig, sec] as the elements
+            # change input's script_sig to new script
+            tx_in.script_sig = Script([sig, sec])
+        # return whether sig is valid using self.verify_input
+        return self.verify_input(input_index)
+
+    def verify_input(self, input_index):
+        '''Returns whether the input has a valid signature'''
+        # get the relevant input
+        tx_in = self.tx_ins[input_index]
+        # get the number of signatures required. This is available in tx_in.script_sig.num_sigs_required()
+        sigs_required = tx_in.script_sig.num_sigs_required()
+        # iterate over the sigs required and check each signature
+        for sig_num in range(sigs_required):
+            # get the point from the sec format
+            sec = tx_in.sec_pubkey(index=sig_num)
+            # get the sec_pubkey at current signature index
+            point = S256Point.parse(sec)
+            # get the der sig and hash_type from input
+            # get the der_signature at current signature index
+            der, hash_type = tx_in.der_signature(index=sig_num)
+            # get the signature from der format
+            signature = Signature.parse(der)
+            # get the hash to sign
+            if tx_in.is_segwit():
+                h160 = hash160(tx_in.script_sig.redeem_script())
+                if h160 != tx_in.script_pubkey(self.testnet).elements[1]:
+                    return False
+                pubkey_h160 = tx_in.script_sig.redeem_script()[-20:]
+                if pubkey_h160 != point.h160():
+                    return False
+                z = self.sig_hash_bip143(input_index, hash_type)
+            else:
+                z = self.sig_hash(input_index, hash_type)
+            # use point.verify on the hash to sign and signature
+            if not point.verify(z, signature):
+                return False
+        return True
+
+
+class BCA(BTGTx):
+    fork_block = 505888
+    fork_id = 93 << 8
+    default_hash_type = 0x41
+    fee = 20000
+    magic = b'\x4f\xc1\x1d\xe8'
+    port = 7333
+    seeds = ("seed.bitcoinatom.io", "seed.bitcoin-atom.org", "seed.bitcoinatom.net")
+    insight = None
+
+    
 class BCXTx(BTGTx):
     fork_block = 498888
     default_version = 2
