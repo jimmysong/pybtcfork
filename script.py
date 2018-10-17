@@ -72,6 +72,11 @@ def multisig_redeem_script(m, points):
     return Script(items)
 
 
+def p2wpkh_script(h160):
+    '''Takes a hash160 and returns the p2pkh scriptPubKey'''
+    return Script([0x00, h160])
+
+
 class Script:
 
     def __init__(self, items):
@@ -151,7 +156,7 @@ class Script:
     def __add__(self, other):
         return Script(self.items + other.items)
 
-    def evaluate(self, z):
+    def evaluate(self, tx_in):
         # create a copy as we may need to add to this list if we have a
         # RedeemScript
         items = self.items[:]
@@ -162,9 +167,9 @@ class Script:
                 # do what the op code says
                 operation = OP_CODE_FUNCTIONS[item]
                 if item in (172, 173, 174, 175):
-                    # these are signing operations, they need a z
+                    # these are signing operations, they need a sig_hash
                     # to check against
-                    if not operation(stack, z):
+                    if not operation(stack, tx_in.sig_hash):
                         print('bad op: {}'.format(OP_CODE_NAMES[item]))
                         return False
                 else:
@@ -196,6 +201,14 @@ class Script:
                     # hashes match! now add the RedeemScript
                     stream = BytesIO(redeem_script)
                     items.extend(Script.parse(stream).items)
+                # witness program version 0 rule. if the two items on stack are:
+                # <20 byte hash> 0 this is p2wpkh
+                if len(stack) == 2 and stack[0] == 0x00 \
+                    and type(stack[1]) == bytes and len(stack[1]) == 20:
+                    h160 = stack.pop()
+                    stack.pop()
+                    items.extend(tx_in.witness_program)
+                    items.extend(p2pkh_script(h160).items)
         if len(stack) == 0:
             print('empty stack')
             return False
@@ -218,6 +231,12 @@ class Script:
         return len(self.items) == 3 and self.items[0] == 0xa9 \
             and type(self.items[1]) == bytes and len(self.items[1]) == 20 \
             and self.items[2] == 0x87
+
+    def is_p2wpkh_script_pubkey(self):
+        '''Returns whether this follows the
+        OP_0 <20 byte hash> pattern.'''
+        return len(self.items) == 2 and self.items[0] == 0x00 \
+            and type(self.items[1]) == bytes and len(self.items[1]) == 20
 
     def address(self, testnet=False):
         '''Returns the address corresponding to the script'''

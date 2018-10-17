@@ -435,12 +435,13 @@ class S256Point(Point):
             # if non-compressed, starts with b'\x04' followod by self.x and then self.y
             return b'\x04' + self.x.num.to_bytes(32, 'big') + self.y.num.to_bytes(32, 'big')
 
+    def hash160(self, compressed=True):
+        return hash160(self.sec(compressed))
+
     def address(self, compressed=True, testnet=False):
         '''Returns the address string'''
-        # get the sec
-        sec = self.sec(compressed)
-        # hash160 the sec
-        h160 = hash160(sec)
+        # get the hash160
+        h160 = self.hash160(compressed)
         # raw is hash 160 prepended w/ b'\x00' for mainnet, b'\x6f' for testnet
         if testnet:
             prefix = b'\x6f'
