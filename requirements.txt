@@ -1,4 +1,2 @@
 jupyter
-nose
-pbkdf2
 requests

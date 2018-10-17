@@ -5,14 +5,71 @@ from helper import (
     encode_varint,
     h160_to_p2pkh_address,
     h160_to_p2sh_address,
+    hash160,
     int_to_little_endian,
     read_varint,
+)
+from op import (
+    op_0,
+    op_1,
+    op_10,
+    op_11,
+    op_12,
+    op_13,
+    op_14,
+    op_15,
+    op_16,
+    op_2,
+    op_3,
+    op_4,
+    op_5,
+    op_6,
+    op_7,
+    op_8,
+    op_9,
+    op_add,
+    op_checkmultisig,
+    op_checkmultisigverify,
+    op_checksig,
+    op_checksigverify,
+    op_drop,
+    op_dup,
+    op_equal,
+    op_equalverify,
+    op_hash160,
+    op_hash256,
+    op_nop,
+    op_not,
+    op_ripemd160,
+    op_sha1,
+    op_sha256,
+    op_sub,
+    op_verify,
 )
 
 
 def p2pkh_script(h160):
-    '''Takes a hash160 and returns the scriptPubKey'''
+    '''Takes a hash160 and returns the p2pkh scriptPubKey'''
     return Script([0x76, 0xa9, h160, 0x88, 0xac])
+
+
+def p2sh_script(h160):
+    '''Takes a hash160 and returns the p2sh scriptPubKey'''
+    return Script([0xa9, h160, 0x87])
+
+
+def multisig_redeem_script(m, points):
+    '''Creates an m-of-n multisig p2sh redeem script'''
+    # start the items with m (note OP_1 is 0x51, OP_2 is 0x52 and so on)
+    items = [m + 0x50]
+    for point in points:
+        # add each point's sec format pubkey
+        items.append(point.sec())
+    # add the n part
+    items.append(len(points) + 0x50)
+    # add OP_CHECKMULTISIG
+    items.append(0xae)
+    return Script(items)
 
 
 class Script:
@@ -24,7 +81,7 @@ class Script:
         result = ''
         for item in self.items:
             if type(item) == int:
-                result += '{} '.format(OP_CODES[item])
+                result += '{} '.format(OP_CODE_NAMES[item])
             else:
                 result += '{} '.format(item.hex())
         return result
@@ -60,7 +117,7 @@ class Script:
                 items.append(op_code)
         return cls(items)
 
-    def serialize(self):
+    def raw_serialize(self):
         # initialize what we'll send back
         result = b''
         # go through each item
@@ -77,28 +134,99 @@ class Script:
                 prefix = int_to_little_endian(length, 1)
                 # append to the result both the length and the item
                 result += prefix + item
+        return result
+    
+    def serialize(self):
+        # get the raw serialization (no prepended length)
+        result = self.raw_serialize()
         # get the length of the whole thing
         total = len(result)
         # encode_varint the total length of the result and prepend
         return encode_varint(total) + result
 
-    def signature(self):
-        '''return the signature element assuming p2pkh script sig'''
-        return self.items[0]
+    def hash160(self):
+        '''Return the hash160 of the serialized script (without length)'''
+        return hash160(self.raw_serialize())
+    
+    def __add__(self, other):
+        return Script(self.items + other.items)
 
-    def sec_pubkey(self):
-        '''return the pubkey element assuming p2pkh script sig'''
-        return self.items[1]
+    def evaluate(self, z):
+        # create a copy as we may need to add to this list if we have a
+        # RedeemScript
+        items = self.items[:]
+        stack = []
+        while len(items) > 0:
+            item = items.pop(0)
+            if type(item) == int:
+                # do what the op code says
+                operation = OP_CODE_FUNCTIONS[item]
+                if item in (172, 173, 174, 175):
+                    # these are signing operations, they need a z
+                    # to check against
+                    if not operation(stack, z):
+                        print('bad op: {}'.format(OP_CODE_NAMES[item]))
+                        return False
+                else:
+                    if not operation(stack):
+                        print('bad op: {}'.format(OP_CODE_NAMES[item]))
+                        return False
+            else:
+                # add the item to the stack
+                stack.append(item)
+                # p2sh rule. if the next three items are:
+                # OP_HASH160 <20 byte hash> OP_EQUAL this is the RedeemScript
+                # OP_HASH160 == 0xa9 and OP_EQUAL == 0x87
+                if len(items) == 3 and items[0] == 0xa9 \
+                    and type(items[1]) == bytes and len(items[1]) == 20 \
+                    and items[2] == 0x87:
+                    redeem_script = int_to_little_endian(len(item), 1) + item
+                    # we execute the next three op codes
+                    items.pop()
+                    h160 = items.pop()
+                    items.pop()
+                    if not op_hash160(stack):
+                        return False
+                    stack.append(h160)
+                    if not op_equal(stack):
+                        return False
+                    # final result should be a 1
+                    if stack.pop() != 1:
+                        return False
+                    # hashes match! now add the RedeemScript
+                    stream = BytesIO(redeem_script)
+                    items.extend(Script.parse(stream).items)
+        if len(stack) == 0:
+            print('empty stack')
+            return False
+        if stack.pop() == 0:
+            print('bad item left')
+            return False
+        return True
+
+    def is_p2pkh_script_pubkey(self):
+        '''Returns whether this follows the
+        OP_DUP OP_HASH160 <20 byte hash> OP_EQUALVERIFY OP_CHECKSIG pattern.'''
+        return len(self.items) == 5 and self.items[0] == 0x76 \
+            and self.items[1] == 0xa9 \
+            and type(self.items[2]) == bytes and len(self.items[2]) == 20 \
+            and self.items[3] == 0x88 and self.items[4] == 0xac
+
+    def is_p2sh_script_pubkey(self):
+        '''Returns whether this follows the
+        OP_HASH160 <20 byte hash> OP_EQUAL pattern.'''
+        return len(self.items) == 3 and self.items[0] == 0xa9 \
+            and type(self.items[1]) == bytes and len(self.items[1]) == 20 \
+            and self.items[2] == 0x87
 
     def address(self, testnet=False):
         '''Returns the address corresponding to the script'''
-        # HACK: just count how many elements to determine what type it is
-        if len(self.items) == 5:  # p2pkh
+        if self.is_p2pkh_script_pubkey():  # p2pkh
             # hash160 is the 3rd element
             h160 = self.items[2]
             # convert to p2pkh address using h160_to_p2pkh_address (remember testnet)
             return h160_to_p2pkh_address(h160, testnet)
-        elif len(self.items) == 3:  # p2sh
+        elif self.is_p2sh_script_pubkey():  # p2sh
             # hash160 is the 2nd element
             h160 = self.items[1]
             # convert to p2sh address using h160_to_p2sh_address (remember testnet)
@@ -156,7 +284,120 @@ class ScriptTest(TestCase):
         self.assertEqual(script_pubkey.address(testnet=True), want)
 
 
-OP_CODES = {
+OP_CODE_FUNCTIONS = {
+    0: op_0,
+    81: op_1,
+    82: op_2,
+    83: op_3,
+    84: op_4,
+    85: op_5,
+    86: op_6,
+    87: op_7,
+    88: op_8,
+    89: op_9,
+    90: op_10,
+    91: op_11,
+    92: op_12,
+    93: op_13,
+    94: op_14,
+    95: op_15,
+    96: op_16,
+    97: op_nop,
+    #    98: op_ver,
+    #    99: op_if,
+    #    100: op_notif,
+    #    101: op_verif,
+    #    102: op_vernotif,
+    #    103: op_else,
+    #    104: op_endif,
+    105: op_verify,
+    #    106: op_return,
+    #    107: op_toaltstack,
+    #    108: op_fromaltstack,
+    #    109: op_2drop,
+    #    110: op_2dup,
+    #    111: op_3dup,
+    #    112: op_2over,
+    #    113: op_2rot,
+    #    114: op_2swap,
+    #    115: op_ifdup,
+    #    116: op_depth,
+    117: op_drop,
+    118: op_dup,
+    #    119: op_nip,
+    #    120: op_over,
+    #    121: op_pick,
+    #    122: op_roll,
+    #    123: op_rot,
+    #    124: op_swap,
+    #    125: op_tuck,
+    #    126: op_cat,
+    #    127: op_substr,
+    #    128: op_left,
+    #    129: op_right,
+    #    130: op_size,
+    #    131: op_invert,
+    #    132: op_and,
+    #    133: op_or,
+    #    134: op_xor,
+    135: op_equal,
+    136: op_equalverify,
+    #    137: op_reserved1,
+    #    138: op_reserved2,
+    #    139: op_1add,
+    #    140: op_1sub,
+    #    141: op_2mul,
+    #    142: op_2div,
+    #    143: op_negate,
+    #    144: op_abs,
+    145: op_not,
+    #    146: op_0notequal,
+    147: op_add,
+    148: op_sub,
+    #    149: op_mul,
+    #    150: op_div,
+    #    151: op_mod,
+    #    152: op_lshift,
+    #    153: op_rshift,
+    #    154: op_booland,
+    #    155: op_boolor,
+    #    156: op_numequal,
+    #    157: op_numequalverify,
+    #    158: op_numnotequal,
+    #    159: op_lessthan,
+    #    160: op_greaterthan,
+    #    161: op_lessthanorequal,
+    #    162: op_greaterthanorequal,
+    #    163: op_min,
+    #    164: op_max,
+    #    165: op_within,
+    166: op_ripemd160,
+    167: op_sha1,
+    168: op_sha256,
+    169: op_hash160,
+    170: op_hash256,
+    #    171: op_codeseparator,
+    172: op_checksig,
+    173: op_checksigverify,
+    174: op_checkmultisig,
+    175: op_checkmultisigverify,
+    #    176: op_nop1,
+    #    177: op_checklocktimeverify,
+    #    178: op_checksequenceverify,
+    #    179: op_nop4,
+    #    180: op_nop5,
+    #    181: op_nop6,
+    #    182: op_nop7,
+    #    183: op_nop8,
+    #    184: op_nop9,
+    #    185: op_nop10,
+    #    252: op_nulldata,
+    #    253: op_pubkeyhash,
+    #    254: op_pubkey,
+    #    255: op_invalidopcode,
+}
+
+OP_CODE_NAMES = {
     0: 'OP_0',
     76: 'OP_PUSHDATA1',
     77: 'OP_PUSHDATA2',
