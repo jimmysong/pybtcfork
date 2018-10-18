@@ -7,6 +7,8 @@ SIGHASH_ALL = 1
 SIGHASH_NONE = 2
 SIGHASH_SINGLE = 3
 BASE58_ALPHABET = b'123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+BECH32_ALPHABET = b'qpzry9x8gf2tvdw0s3jn54khce6mua7l'
+GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
 
 
 def run_test(test):
@@ -43,6 +45,10 @@ def hash160(s):
     return hashlib.new('ripemd160', hashlib.sha256(s).digest()).digest()
 
 
+def sha256(s):
+    return hashlib.sha256(s).digest()
+
+
 def double_sha256(s):
     return hashlib.sha256(hashlib.sha256(s).digest()).digest()
 
@@ -57,7 +63,7 @@ def encode_base58(s):
             break
     prefix = b'1' * count
     # convert from binary to hex, then hex to integer
-    num = int(s.hex(), 16)
+    num = int.from_bytes(s, 'big')
     result = bytearray()
     while num > 0:
         num, mod = divmod(num, 58)
@@ -86,6 +92,98 @@ def decode_base58(s):
     if double_sha256(combined[:-4])[:4] != checksum:
         raise RuntimeError('bad address: {} {}'.format(checksum, double_sha256(combined)[:4]))
     return combined[1:-4]
+
+
+# next four functions are straight from BIP0173:
+# https://github.com/bitcoin/bips/blob/master/bip-0173.mediawiki
+def bech32_polymod(values):
+    chk = 1
+    for v in values:
+        b = (chk >> 25)
+        chk = (chk & 0x1ffffff) << 5 ^ v
+        for i in range(5):
+            chk ^= GEN[i] if ((b >> i) & 1) else 0
+    return chk
+
+
+def bech32_hrp_expand(s):
+    return [x >> 5 for x in s] + [0] + [x & 31 for x in s]
+
+
+def bech32_verify_checksum(hrp, data):
+    return bech32_polymod(bech32_hrp_expand(hrp) + data) == 1
+
+
+def bech32_create_checksum(hrp, data):
+    values = bech32_hrp_expand(hrp) + data
+    polymod = bech32_polymod(values + [0, 0, 0, 0, 0, 0]) ^ 1
+    return [(polymod >> 5 * (5 - i)) & 31 for i in range(6)]
+
+
+def group_32(s):
+    '''Convert from 8-bit bytes to 5-bit array of integers'''
+    result = []
+    unused_bits = 0
+    current = 0
+    for c in s:
+        unused_bits += 8
+        current = current * 256 + c
+        while unused_bits > 5:
+            unused_bits -= 5
+            result.append(current >> unused_bits)
+            mask = (1 << unused_bits) - 1
+            current &= mask
+    result.append(current << (5 - unused_bits))
+    return result
+
+
+def encode_bech32(nums):
+    '''Convert from 5-bit array of integers to bech32 format'''
+    return bytes([BECH32_ALPHABET[n] for n in nums])
+
+
+def encode_bech32_checksum(s, prefix=b'bc'):
+    '''Convert a witness program to a bech32 address'''
+    version = s[0]
+    if version > 0:
+        version -= 0x50
+    length = s[1]
+    data = [version] + group_32(s[2:2 + length])
+    checksum = bech32_create_checksum(prefix, data)
+    bech32 = encode_bech32(data + checksum)
+    result = prefix + b'1' + bech32
+    return result.decode('ascii')
+
+
+def decode_bech32(s):
+    '''Convert a bech32 address to a witness program'''
+    hrp, raw_data = s.encode('ascii').split(b'1')
+    data = [BECH32_ALPHABET.index(c) for c in raw_data]
+    if not bech32_verify_checksum(hrp, data):
+        raise RuntimeError('bad address: {}'.format(s))
+    version = data[0]
+    current = 0
+    unused_bits = 0
+    witness = bytearray()
+    for digit in data[1:-6]:
+        unused_bits += 5
+        current = current * 32 + digit
+        if unused_bits >= 8:
+            unused_bits -= 8
+            witness.append(current >> unused_bits)
+            mask = (1 << unused_bits) - 1
+            current &= mask
+    if current != 0:
+        raise RuntimeError('unneeded extra data: {}'.format(current))
+    if version == 0:
+        version_byte = b'\x00'
+    else:
+        version_byte = encode_varint(version + 0x50)
+    num_bytes = len(witness)
+    if num_bytes < 2 or num_bytes > 40:
+        raise RuntimeError('bytes out of range: {}'.format(num_bytes))
+    length_byte = encode_varint(num_bytes)
+    return version_byte + length_byte + bytes(witness)
 
 
 def read_varint(s):
@@ -277,6 +375,26 @@ class HelperTest(TestCase):
         want = '507b27411ccf7f16f10297de6cef3f291623eddf'
         self.assertEqual(h160, want)
         got = encode_base58_checksum(b'\x6f' + bytes.fromhex(h160))
+        self.assertEqual(got, addr)
+
+    def test_bech32(self):
+        addr = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4'
+        witness = decode_bech32(addr).hex()
+        want = '0014751e76e8199196d454941c45d1b3a323f1433bd6'
+        self.assertEqual(witness, want)
+        got = encode_bech32_checksum(bytes.fromhex(want))
+        self.assertEqual(got, addr)
+        addr = 'bc1pw508d6qejxtdg4y5r3zarvary0c5xw7kw508d6qejxtdg4y5r3zarvary0c5xw7k7grplx'
+        witness = decode_bech32(addr).hex()
+        want = '5128751e76e8199196d454941c45d1b3a323f1433bd6751e76e8199196d454941c45d1b3a323f1433bd6'
+        self.assertEqual(witness, want)
+        got = encode_bech32_checksum(bytes.fromhex(want))
+        self.assertEqual(got, addr)
+        addr = 'tb1qevl98yey2nqnhnh5psn3h73zfl9yy5ae3ss4e79qungqa8y0eprsl8gle6'
+        witness = decode_bech32(addr).hex()
+        want = '0020cb3e53932454c13bcef40c271bfa224fca4253b98c215cf8a0e4d00e9c8fc847'
+        self.assertEqual(witness, want)
+        got = encode_bech32_checksum(bytes.fromhex(want), prefix=b'tb')
         self.assertEqual(got, addr)
 
     def test_p2pkh_address(self):

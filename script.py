@@ -2,49 +2,20 @@ from io import BytesIO
 from unittest import TestCase
 
 from helper import (
+    encode_bech32_checksum,
     encode_varint,
     h160_to_p2pkh_address,
     h160_to_p2sh_address,
     hash160,
     int_to_little_endian,
     read_varint,
+    sha256,
 )
 from op import (
-    op_0,
-    op_1,
-    op_10,
-    op_11,
-    op_12,
-    op_13,
-    op_14,
-    op_15,
-    op_16,
-    op_2,
-    op_3,
-    op_4,
-    op_5,
-    op_6,
-    op_7,
-    op_8,
-    op_9,
-    op_add,
-    op_checkmultisig,
-    op_checkmultisigverify,
-    op_checksig,
-    op_checksigverify,
-    op_drop,
-    op_dup,
-    op_equal,
-    op_equalverify,
     op_hash160,
-    op_hash256,
-    op_nop,
-    op_not,
-    op_ripemd160,
-    op_sha1,
-    op_sha256,
-    op_sub,
-    op_verify,
+    op_equal,
+    OP_CODE_FUNCTIONS,
+    OP_CODE_NAMES,
 )
 
 
@@ -73,8 +44,13 @@ def multisig_redeem_script(m, points):
 
 
 def p2wpkh_script(h160):
-    '''Takes a hash160 and returns the p2pkh scriptPubKey'''
+    '''Takes a hash160 and returns the p2wpkh scriptPubKey'''
     return Script([0x00, h160])
+
+
+def p2wsh_script(h256):
+    '''Takes a hash160 and returns the p2wsh scriptPubKey'''
+    return Script([0x00, h256])
 
 
 class Script:
@@ -140,7 +116,7 @@ class Script:
                 # append to the result both the length and the item
                 result += prefix + item
         return result
-    
+
     def serialize(self):
         # get the raw serialization (no prepended length)
         result = self.raw_serialize()
@@ -152,7 +128,11 @@ class Script:
     def hash160(self):
         '''Return the hash160 of the serialized script (without length)'''
         return hash160(self.raw_serialize())
-    
+
+    def sha256(self):
+        '''Return the sha256 of the serialized script (without length)'''
+        return sha256(self.raw_serialize())
+
     def __add__(self, other):
         return Script(self.items + other.items)
 
@@ -185,7 +165,7 @@ class Script:
                 if len(items) == 3 and items[0] == 0xa9 \
                     and type(items[1]) == bytes and len(items[1]) == 20 \
                     and items[2] == 0x87:
-                    redeem_script = int_to_little_endian(len(item), 1) + item
+                    redeem_script = encode_varint(len(item)) + item
                     # we execute the next three op codes
                     items.pop()
                     h160 = items.pop()
@@ -197,11 +177,12 @@ class Script:
                         return False
                     # final result should be a 1
                     if stack.pop() != 1:
+                        print('bad h160')
                         return False
                     # hashes match! now add the RedeemScript
                     stream = BytesIO(redeem_script)
                     items.extend(Script.parse(stream).items)
-                # witness program version 0 rule. if the two items on stack are:
+                # witness program version 0 rule. if stack items are:
                 # <20 byte hash> 0 this is p2wpkh
                 if len(stack) == 2 and stack[0] == 0x00 \
                     and type(stack[1]) == bytes and len(stack[1]) == 20:
@@ -209,6 +190,20 @@ class Script:
                     stack.pop()
                     items.extend(tx_in.witness_program)
                     items.extend(p2pkh_script(h160).items)
+                # witness program version 0 rule. if stack items are:
+                # <32 byte hash> 0 this is p2wsh
+                if len(stack) == 2 and stack[0] == 0x00 \
+                    and type(stack[1]) == bytes and len(stack[1]) == 32:
+                    h256 = stack.pop()
+                    stack.pop()
+                    items.extend(tx_in.witness_program[:-1])
+                    witness_script = tx_in.witness_program[-1]
+                    if h256 != sha256(witness_script):
+                        print('bad sha256 {} vs {}'.format(h256.hex(), sha256(witness_script).hex()))
+                        return False
+                    # hashes match! now add the Witness Script
+                    stream = BytesIO(encode_varint(len(witness_script)) + witness_script)
+                    items.extend(Script.parse(stream).items)
         if len(stack) == 0:
             print('empty stack')
             return False
@@ -238,6 +233,12 @@ class Script:
         return len(self.items) == 2 and self.items[0] == 0x00 \
             and type(self.items[1]) == bytes and len(self.items[1]) == 20
 
+    def is_p2wsh_script_pubkey(self):
+        '''Returns whether this follows the
+        OP_0 <20 byte hash> pattern.'''
+        return len(self.items) == 2 and self.items[0] == 0x00 \
+            and type(self.items[1]) == bytes and len(self.items[1]) == 32
+
     def address(self, testnet=False):
         '''Returns the address corresponding to the script'''
         if self.is_p2pkh_script_pubkey():  # p2pkh
@@ -250,6 +251,24 @@ class Script:
             h160 = self.items[1]
             # convert to p2sh address using h160_to_p2sh_address (remember testnet)
             return h160_to_p2sh_address(h160, testnet)
+        elif self.is_p2wpkh_script_pubkey():  # p2sh
+            # hash160 is the 2nd element
+            if testnet:
+                prefix = b'tb'
+            else:
+                prefix = b'bc'
+            witness_program = self.raw_serialize()
+            # convert to bech32 address using encode_bech32_checksum
+            return encode_bech32_checksum(witness_program, prefix=prefix)
+        elif self.is_p2wsh_script_pubkey():  # p2sh
+            # hash160 is the 2nd element
+            if testnet:
+                prefix = b'tb'
+            else:
+                prefix = b'bc'
+            witness_program = self.raw_serialize()
+            # convert to bech32 address using encode_bech32_checksum
+            return encode_bech32_checksum(witness_program, prefix=prefix)
 
 
 class ScriptTest(TestCase):
@@ -301,235 +320,3 @@ class ScriptTest(TestCase):
         self.assertEqual(script_pubkey.address(testnet=False), want)
         want = '2N3u1R6uwQfuobCqbCgBkpsgBxvr1tZpe7B'
         self.assertEqual(script_pubkey.address(testnet=True), want)
-
-
-OP_CODE_FUNCTIONS = {
-    0: op_0,
-    81: op_1,
-    82: op_2,
-    83: op_3,
-    84: op_4,
-    85: op_5,
-    86: op_6,
-    87: op_7,
-    88: op_8,
-    89: op_9,
-    90: op_10,
-    91: op_11,
-    92: op_12,
-    93: op_13,
-    94: op_14,
-    95: op_15,
-    96: op_16,
-    97: op_nop,
-    #    98: op_ver,
-    #    99: op_if,
-    #    100: op_notif,
-    #    101: op_verif,
-    #    102: op_vernotif,
-    #    103: op_else,
-    #    104: op_endif,
-    105: op_verify,
-    #    106: op_return,
-    #    107: op_toaltstack,
-    #    108: op_fromaltstack,
-    #    109: op_2drop,
-    #    110: op_2dup,
-    #    111: op_3dup,
-    #    112: op_2over,
-    #    113: op_2rot,
-    #    114: op_2swap,
-    #    115: op_ifdup,
-    #    116: op_depth,
-    117: op_drop,
-    118: op_dup,
-    #    119: op_nip,
-    #    120: op_over,
-    #    121: op_pick,
-    #    122: op_roll,
-    #    123: op_rot,
-    #    124: op_swap,
-    #    125: op_tuck,
-    #    126: op_cat,
-    #    127: op_substr,
-    #    128: op_left,
-    #    129: op_right,
-    #    130: op_size,
-    #    131: op_invert,
-    #    132: op_and,
-    #    133: op_or,
-    #    134: op_xor,
-    135: op_equal,
-    136: op_equalverify,
-    #    137: op_reserved1,
-    #    138: op_reserved2,
-    #    139: op_1add,
-    #    140: op_1sub,
-    #    141: op_2mul,
-    #    142: op_2div,
-    #    143: op_negate,
-    #    144: op_abs,
-    145: op_not,
-    #    146: op_0notequal,
-    147: op_add,
-    148: op_sub,
-    #    149: op_mul,
-    #    150: op_div,
-    #    151: op_mod,
-    #    152: op_lshift,
-    #    153: op_rshift,
-    #    154: op_booland,
-    #    155: op_boolor,
-    #    156: op_numequal,
-    #    157: op_numequalverify,
-    #    158: op_numnotequal,
-    #    159: op_lessthan,
-    #    160: op_greaterthan,
-    #    161: op_lessthanorequal,
-    #    162: op_greaterthanorequal,
-    #    163: op_min,
-    #    164: op_max,
-    #    165: op_within,
-    166: op_ripemd160,
-    167: op_sha1,
-    168: op_sha256,
-    169: op_hash160,
-    170: op_hash256,
-    #    171: op_codeseparator,
-    172: op_checksig,
-    173: op_checksigverify,
-    174: op_checkmultisig,
-    175: op_checkmultisigverify,
-    #    176: op_nop1,
-    #    177: op_checklocktimeverify,
-    #    178: op_checksequenceverify,
-    #    179: op_nop4,
-    #    180: op_nop5,
-    #    181: op_nop6,
-    #    182: op_nop7,
-    #    183: op_nop8,
-    #    184: op_nop9,
-    #    185: op_nop10,
-    #    252: op_nulldata,
-    #    253: op_pubkeyhash,
-    #    254: op_pubkey,
-    #    255: op_invalidopcode,
-}
-
-OP_CODE_NAMES = {
-    0: 'OP_0',
-    76: 'OP_PUSHDATA1',
-    77: 'OP_PUSHDATA2',
-    78: 'OP_PUSHDATA4',
-    79: 'OP_1NEGATE',
-    80: 'OP_RESERVED',
-    81: 'OP_1',
-    82: 'OP_2',
-    83: 'OP_3',
-    84: 'OP_4',
-    85: 'OP_5',
-    86: 'OP_6',
-    87: 'OP_7',
-    88: 'OP_8',
-    89: 'OP_9',
-    90: 'OP_10',
-    91: 'OP_11',
-    92: 'OP_12',
-    93: 'OP_13',
-    94: 'OP_14',
-    95: 'OP_15',
-    96: 'OP_16',
-    97: 'OP_NOP',
-    98: 'OP_VER',
-    99: 'OP_IF',
-    100: 'OP_NOTIF',
-    101: 'OP_VERIF',
-    102: 'OP_VERNOTIF',
-    103: 'OP_ELSE',
-    104: 'OP_ENDIF',
-    105: 'OP_VERIFY',
-    106: 'OP_RETURN',
-    107: 'OP_TOALTSTACK',
-    108: 'OP_FROMALTSTACK',
-    109: 'OP_2DROP',
-    110: 'OP_2DUP',
-    111: 'OP_3DUP',
-    112: 'OP_2OVER',
-    113: 'OP_2ROT',
-    114: 'OP_2SWAP',
-    115: 'OP_IFDUP',
-    116: 'OP_DEPTH',
-    117: 'OP_DROP',
-    118: 'OP_DUP',
-    119: 'OP_NIP',
-    120: 'OP_OVER',
-    121: 'OP_PICK',
-    122: 'OP_ROLL',
-    123: 'OP_ROT',
-    124: 'OP_SWAP',
-    125: 'OP_TUCK',
-    126: 'OP_CAT',
-    127: 'OP_SUBSTR',
-    128: 'OP_LEFT',
-    129: 'OP_RIGHT',
-    130: 'OP_SIZE',
-    131: 'OP_INVERT',
-    132: 'OP_AND',
-    133: 'OP_OR',
-    134: 'OP_XOR',
-    135: 'OP_EQUAL',
-    136: 'OP_EQUALVERIFY',
-    137: 'OP_RESERVED1',
-    138: 'OP_RESERVED2',
-    139: 'OP_1ADD',
-    140: 'OP_1SUB',
-    141: 'OP_2MUL',
-    142: 'OP_2DIV',
-    143: 'OP_NEGATE',
-    144: 'OP_ABS',
-    145: 'OP_NOT',
-    146: 'OP_0NOTEQUAL',
-    147: 'OP_ADD',
-    148: 'OP_SUB',
-    149: 'OP_MUL',
-    150: 'OP_DIV',
-    151: 'OP_MOD',
-    152: 'OP_LSHIFT',
-    153: 'OP_RSHIFT',
-    154: 'OP_BOOLAND',
-    155: 'OP_BOOLOR',
-    156: 'OP_NUMEQUAL',
-    157: 'OP_NUMEQUALVERIFY',
-    158: 'OP_NUMNOTEQUAL',
-    159: 'OP_LESSTHAN',
-    160: 'OP_GREATERTHAN',
-    161: 'OP_LESSTHANOREQUAL',
-    162: 'OP_GREATERTHANOREQUAL',
-    163: 'OP_MIN',
-    164: 'OP_MAX',
-    165: 'OP_WITHIN',
-    166: 'OP_RIPEMD160',
-    167: 'OP_SHA1',
-    168: 'OP_SHA256',
-    169: 'OP_HASH160',
-    170: 'OP_HASH256',
-    171: 'OP_CODESEPARATOR',
-    172: 'OP_CHECKSIG',
-    173: 'OP_CHECKSIGVERIFY',
-    174: 'OP_CHECKMULTISIG',
-    175: 'OP_CHECKMULTISIGVERIFY',
-    176: 'OP_NOP1',
-    177: 'OP_CHECKLOCKTIMEVERIFY',
-    178: 'OP_CHECKSEQUENCEVERIFY',
-    179: 'OP_NOP4',
-    180: 'OP_NOP5',
-    181: 'OP_NOP6',
-    182: 'OP_NOP7',
-    183: 'OP_NOP8',
-    184: 'OP_NOP9',
-    185: 'OP_NOP10',
-    252: 'OP_NULLDATA',
-    253: 'OP_PUBKEYHASH',
-    254: 'OP_PUBKEY',
-    255: 'OP_INVALIDOPCODE',
-}
