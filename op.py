@@ -1,6 +1,7 @@
 import hashlib
 
 from ecc import S256Point, Signature
+from helper import little_endian_to_int
 
 
 def op_0(stack):
@@ -89,6 +90,77 @@ def op_16(stack):
 
 
 def op_nop(stack):
+    return True
+
+
+def op_if(stack, items):
+    if len(stack) < 1:
+        return False
+    # go through and re-make the items array based on the top stack element
+    true_items = []
+    false_items = []
+    current_array = true_items
+    found = False
+    num_endifs_needed = 1
+    while len(items) > 0:
+        item = items.pop(0)
+        if item in (99, 100):
+            # nested if, we have to go another endif
+            num_endifs_needed += 1
+            current_array.append(item)
+        elif num_endifs_needed == 1 and item == 103:
+            current_array = false_items
+        elif item == 104:
+            if num_endifs_needed == 1:
+                found = True
+                break
+            else:
+                num_endifs_needed -= 1
+                current_array.append(item)
+        else:
+            current_array.append(item)
+    if not found:
+        return False
+    element = stack.pop()
+    if element == 0:
+        items[:0] = false_items
+    else:
+        items[:0] = true_items
+    return True
+
+
+def op_notif(stack, items):
+    if len(stack) < 1:
+        return False
+    # go through and re-make the items array based on the top stack element
+    true_items = []
+    false_items = []
+    current_array = true_items
+    found = False
+    while len(items) > 0:
+        item = items.pop(0)
+        if item in (99, 100):
+            # nested if, we have to go another endif
+            num_endifs_needed += 1
+            current_array.append(item)
+        elif num_endifs_needed == 1 and item == 103:
+            current_array = false_items
+        elif item == 104:
+            if num_endifs_needed == 1:
+                found = True
+                break
+            else:
+                num_endifs_needed -= 1
+                current_array.append(item)
+        else:
+            current_array.append(item)
+    if not found:
+        return False
+    element = stack.pop()
+    if element == 0:
+        items[:0] = true_items
+    else:
+        items[:0] = false_items
     return True
 
 
@@ -280,13 +352,39 @@ def op_checklocktimeverify(stack, locktime, sequence):
         return False
     if len(stack) < 1:
         return False
-    item = stack[-1]
+    if type(stack[-1]) == int:
+        item = stack[-1]
+    else:
+        item = little_endian_to_int(stack[-1])
     if item < 0:
         return False
     if item < 500000000 and locktime > 500000000:
         return False
     if locktime < item:
         return False
+    return True
+
+
+def op_checksequenceverify(stack, version, sequence):
+    if sequence & (1 << 31) == (1 << 31):
+        return False
+    if len(stack) < 1:
+        return False
+    if type(stack[-1]) == int:
+        item = stack[-1]
+    else:
+        item = little_endian_to_int(stack[-1])
+    if item < 0:
+        return False
+    if item & (1 << 31) == (1 << 31):
+        if version < 2:
+            return False
+        elif sequence & (1 << 31) == (1 << 31):
+            return False
+        elif item & (1 << 22) != sequence & (1 << 22):
+            return False
+        elif item & 0xffff > sequence & 0xffff:
+            return False
     return True
 
 
@@ -310,8 +408,8 @@ OP_CODE_FUNCTIONS = {
     96: op_16,
     97: op_nop,
     #    98: op_ver,
-    #    99: op_if,
-    #    100: op_notif,
+    99: op_if,
+    100: op_notif,
     #    101: op_verif,
     #    102: op_vernotif,
     #    103: op_else,
@@ -388,8 +486,8 @@ OP_CODE_FUNCTIONS = {
     174: op_checkmultisig,
     175: op_checkmultisigverify,
     #    176: op_nop1,
-    #    177: op_checklocktimeverify,
-    #    178: op_checksequenceverify,
+    177: op_checklocktimeverify,
+    178: op_checksequenceverify,
     #    179: op_nop4,
     #    180: op_nop5,
     #    181: op_nop6,

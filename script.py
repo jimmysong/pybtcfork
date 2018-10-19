@@ -8,6 +8,7 @@ from helper import (
     h160_to_p2sh_address,
     hash160,
     int_to_little_endian,
+    little_endian_to_int,
     read_varint,
     sha256,
 )
@@ -17,6 +18,9 @@ from op import (
     OP_CODE_FUNCTIONS,
     OP_CODE_NAMES,
 )
+
+
+DEBUG=True
 
 
 def p2pkh_script(h160):
@@ -51,6 +55,39 @@ def p2wpkh_script(h160):
 def p2wsh_script(h256):
     '''Takes a hash160 and returns the p2wsh scriptPubKey'''
     return Script([0x00, h256])
+
+
+def print_state(items, item, stack):
+    print('-' * 80)
+    total_height = max(len(items), 1, len(stack))
+    for i in range(total_height):
+        to_print = ''
+        if len(items) >= total_height - i:
+            current = items[len(items) - (total_height - i)]
+            if type(current) == int:
+                current = OP_CODE_NAMES[current]
+            else:
+                current = current.hex()[:24]
+            to_print += '{0: <24}'.format(current)
+        else:
+            to_print += ' ' * 24
+        to_print += '    '
+        if i == total_height - 1:
+            current = item
+            if type(current) == int:
+                current = OP_CODE_NAMES[current]
+            else:
+                current = current.hex()[:24]
+            to_print += '{0: <24}'.format(current)
+        else:
+            to_print += ' ' * 24
+        to_print += '    '
+        if len(stack) >= total_height - i:
+            current = stack[total_height - i - 1]
+            if type(current) == bytes:
+                current = current.hex()[:24]
+            to_print += '{0: <24}'.format(current)
+        print(to_print)
 
 
 class Script:
@@ -91,6 +128,21 @@ class Script:
                 items.append(s.read(n))
                 # increase the count by n
                 count += n
+            elif current_byte == 76:
+                # op_pushdata1
+                data_length = little_endian_to_int(s.read(1))
+                items.append(s.read(data_length))
+                count += data_length + 1
+            elif current_byte == 77:
+                # op_pushdata2
+                data_length = little_endian_to_int(s.read(2))
+                items.append(s.read(data_length))
+                count += data_length + 2
+            elif current_byte == 78:
+                # op_pushdata4
+                data_length = little_endian_to_int(s.read(4))
+                items.append(s.read(data_length))
+                count += data_length + 4
             else:
                 # we have an op code. set the current byte to op_code
                 op_code = current_byte
@@ -111,10 +163,25 @@ class Script:
                 # otherwise, this is an element
                 # get the length in bytes
                 length = len(item)
-                # turn the length into a single byte integer using int_to_little_endian
-                prefix = int_to_little_endian(length, 1)
-                # append to the result both the length and the item
-                result += prefix + item
+                # for large lengths, we have to use a pushdata op code
+                if length < 75:
+                    # turn the length into a single byte integer
+                    result += int_to_little_endian(length, 1)
+                elif length > 75 and length < 0x100:
+                    # 76 is pushdata1
+                    result += int_to_little_endian(76, 1)
+                    result += int_to_little_endian(length, 1)
+                elif length >= 0x100 and length < 0x10000:
+                    # 77 is pushdata 2
+                    result += int_to_little_endian(77, 1)
+                    result += int_to_little_endian(length, 2)
+                elif length >= 0x10000 and length < 0x100000000:
+                    # 78 is pushdata 4
+                    result += int_to_little_endian(78, 1)
+                    result += int_to_little_endian(length, 4)
+                else:
+                    raise RuntimeError('too long an item')
+                result += item
         return result
 
     def serialize(self):
@@ -143,6 +210,8 @@ class Script:
         stack = []
         while len(items) > 0:
             item = items.pop(0)
+            if DEBUG:
+                print_state(items, item, stack)
             if type(item) == int:
                 # do what the op code says
                 operation = OP_CODE_FUNCTIONS[item]
@@ -150,6 +219,21 @@ class Script:
                     # these are signing operations, they need a sig_hash
                     # to check against
                     if not operation(stack, tx_in.sig_hash):
+                        print('bad op: {}'.format(OP_CODE_NAMES[item]))
+                        return False
+                elif item == 177:
+                    # op_checklocktimeverify requires locktime and sequence
+                    if not operation(stack, tx_in.locktime, tx_in.sequence):
+                        print('bad cltv')
+                        return False
+                elif item == 178:
+                    # op_checksequenceverify requires version and sequence
+                    if not operation(stack, tx_in.version, tx_in.sequence):
+                        print('bad csv')
+                        return False
+                elif item in (99, 100):
+                    # op_if/op_notif require the items array
+                    if not operation(stack, items):
                         print('bad op: {}'.format(OP_CODE_NAMES[item]))
                         return False
                 else:
@@ -183,7 +267,7 @@ class Script:
                     stream = BytesIO(redeem_script)
                     items.extend(Script.parse(stream).items)
                 # witness program version 0 rule. if stack items are:
-                # <20 byte hash> 0 this is p2wpkh
+                # 0 <20 byte hash> this is p2wpkh
                 if len(stack) == 2 and stack[0] == 0x00 \
                     and type(stack[1]) == bytes and len(stack[1]) == 20:
                     h160 = stack.pop()
@@ -191,7 +275,7 @@ class Script:
                     items.extend(tx_in.witness_program)
                     items.extend(p2pkh_script(h160).items)
                 # witness program version 0 rule. if stack items are:
-                # <32 byte hash> 0 this is p2wsh
+                # 0 <32 byte hash> this is p2wsh
                 if len(stack) == 2 and stack[0] == 0x00 \
                     and type(stack[1]) == bytes and len(stack[1]) == 32:
                     h256 = stack.pop()
@@ -302,7 +386,6 @@ class ScriptTest(TestCase):
         script_pubkey_raw = bytes.fromhex('17a91474d691da1574e6b3c192ecfb52cc8984ee7b6c5687')
         script_pubkey = Script.parse(BytesIO(script_pubkey_raw))
         self.assertEqual(script_pubkey.serialize(), script_pubkey_raw)
-
         script_sig_raw = bytes.fromhex('db00483045022100dc92655fe37036f47756db8102e0d7d5e28b3beb83a8fef4f5dc0559bddfb94e02205a36d4e4e6c7fcd16658c50783e00c341609977aed3ad00937bf4ee942a8993701483045022100da6bee3c93766232079a01639d07fa869598749729ae323eab8eef53577d611b02207bef15429dcadce2121ea07f233115c6f09034c0be68db99980b9a6c5e75402201475221022626e955ea6ea6d98850c994f9107b036b1334f18ca8830bfff1295d21cfdb702103b287eaf122eea69030a0e9feed096bed8045c8b98bec453e1ffac7fbdbd4bb7152ae')
         script_sig = Script.parse(BytesIO(script_sig_raw))
         self.assertEqual(script_sig.serialize(), script_sig_raw)
