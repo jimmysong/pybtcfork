@@ -1,91 +1,130 @@
 import hashlib
 
 from ecc import S256Point, Signature
-from helper import little_endian_to_int
+
+
+def encode_num(num):
+    if num == 0:
+        return b''
+    abs_num = abs(num)
+    negative = num < 0
+    result = bytearray()
+    while abs_num:
+        result.append(abs_num & 0xff)
+        abs_num >>= 8
+    if result[-1] & 0x80:
+        if negative:
+            result.append(0x80)
+        else:
+            result.append(0)
+    elif negative:
+        result[-1] |= 0x80
+    return bytes(result)
+
+
+def decode_num(element):
+    if element == b'':
+        return 0
+    # reverse for big endian
+    big_endian = element[::-1]
+    # top bit being 1 means it's negative
+    if big_endian[0] & 0x80:
+        negative = True
+        result = big_endian[0] & 0x7f
+    else:
+        negative = False
+        result = big_endian[0]
+    for c in big_endian[1:]:
+        result <<= 8
+        result += c
+    if negative:
+        return -result
+    else:
+        return result
 
 
 def op_0(stack):
-    stack.append(0)
+    stack.append(encode_num(0))
     return True
 
 
 def op_1(stack):
-    stack.append(1)
+    stack.append(encode_num(1))
     return True
 
 
 def op_2(stack):
-    stack.append(2)
+    stack.append(encode_num(2))
     return True
 
 
 def op_3(stack):
-    stack.append(3)
+    stack.append(encode_num(3))
     return True
 
 
 def op_4(stack):
-    stack.append(4)
+    stack.append(encode_num(4))
     return True
 
 
 def op_5(stack):
-    stack.append(5)
+    stack.append(encode_num(5))
     return True
 
 
 def op_6(stack):
-    stack.append(6)
+    stack.append(encode_num(6))
     return True
 
 
 def op_7(stack):
-    stack.append(7)
+    stack.append(encode_num(7))
     return True
 
 
 def op_8(stack):
-    stack.append(8)
+    stack.append(encode_num(8))
     return True
 
 
 def op_9(stack):
-    stack.append(9)
+    stack.append(encode_num(9))
     return True
 
 
 def op_10(stack):
-    stack.append(10)
+    stack.append(encode_num(10))
     return True
 
 
 def op_11(stack):
-    stack.append(11)
+    stack.append(encode_num(11))
     return True
 
 
 def op_12(stack):
-    stack.append(12)
+    stack.append(encode_num(12))
     return True
 
 
 def op_13(stack):
-    stack.append(13)
+    stack.append(encode_num(13))
     return True
 
 
 def op_14(stack):
-    stack.append(14)
+    stack.append(encode_num(14))
     return True
 
 
 def op_15(stack):
-    stack.append(15)
+    stack.append(encode_num(15))
     return True
 
 
 def op_16(stack):
-    stack.append(16)
+    stack.append(encode_num(16))
     return True
 
 
@@ -122,7 +161,7 @@ def op_if(stack, items):
     if not found:
         return False
     element = stack.pop()
-    if element == 0:
+    if decode_num(element) == 0:
         items[:0] = false_items
     else:
         items[:0] = true_items
@@ -158,7 +197,7 @@ def op_notif(stack, items):
     if not found:
         return False
     element = stack.pop()
-    if element == 0:
+    if decode_num(element) == 0:
         items[:0] = true_items
     else:
         items[:0] = false_items
@@ -168,8 +207,8 @@ def op_notif(stack, items):
 def op_verify(stack):
     if len(stack) < 1:
         return False
-    item = stack.pop()
-    if item == 0:
+    element = stack.pop()
+    if decode_num(element) == 0:
         return False
     return True
 
@@ -198,36 +237,29 @@ def op_dup(stack):
 def op_swap(stack):
     if len(stack) < 2:
         return False
-    item1 = stack.pop()
-    item2 = stack.pop()
-    stack.append(item1)
-    stack.append(item2)
+    element1 = stack.pop()
+    element2 = stack.pop()
+    stack.append(element1)
+    stack.append(element2)
     return True
 
 
 def op_size(stack):
     if len(stack) < 1:
         return False
-    if stack[-1] == 0:
-        stack.append(0)
-    else:
-        stack.append(len(stack[-1]))
+    stack.append(encode_num(len(stack[-1])))
     return True
 
 
 def op_equal(stack):
     if len(stack) < 2:
         return False
-    item1 = stack.pop()
-    item2 = stack.pop()
-    if type(item1) == bytes:
-        item1 = little_endian_to_int(item1)
-    if type(item2) == bytes:
-        item2 = little_endian_to_int(item2)
-    if item1 == item2:
-        stack.append(1)
+    element1 = stack.pop()
+    element2 = stack.pop()
+    if element1 == element2:
+        stack.append(encode_num(1))
     else:
-        stack.append(0)
+        stack.append(encode_num(0))
     return True
 
 
@@ -238,63 +270,61 @@ def op_equalverify(stack):
 def op_not(stack):
     if len(stack) < 1:
         return False
-    item = stack.pop()
-    if item == 0:
-        stack.append(1)
+    element = stack.pop()
+    if decode_num(element) == 0:
+        stack.append(encode_num(1))
     else:
-        stack.append(0)
+        stack.append(encode_num(0))
     return True
 
 
 def op_add(stack):
     if len(stack) < 2:
         return False
-    item1 = stack.pop()
-    item2 = stack.pop()
-    stack.append(item1 + item2)
+    element1 = decode_num(stack.pop())
+    element2 = decode_num(stack.pop())
+    stack.append(encode_num(element1 + element2))
     return True
 
 
 def op_sub(stack):
     if len(stack) < 2:
         return False
-    item1 = stack.pop()
-    item2 = stack.pop()
-    stack.append(item2 - item1)
+    element1 = decode_num(stack.pop())
+    element2 = decode_num(stack.pop())
+    stack.append(encode_num(element1 - element2))
     return True
 
 
 def op_ripemd160(stack):
     if len(stack) < 1:
         return False
-    item = stack.pop()
-    stack.append(hashlib.new('ripemd160', item).digest())
+    element = stack.pop()
+    stack.append(hashlib.new('ripemd160', element).digest())
     return True
 
 
 def op_sha1(stack):
     if len(stack) < 1:
         return False
-    item = stack.pop()
-    stack.append(hashlib.sha1(item).digest())
+    element = stack.pop()
+    stack.append(hashlib.sha1(element).digest())
     return True
 
 
 def op_sha256(stack):
     if len(stack) < 1:
         return False
-    item = stack.pop()
-    stack.append(hashlib.sha256(item).digest())
+    element = stack.pop()
+    stack.append(hashlib.sha256(element).digest())
     return True
 
 
 def op_hash160(stack):
     if len(stack) < 1:
         return False
-    item = stack.pop()
-    if item == 0:
-        item = b''
-    h160 = hashlib.new('ripemd160', hashlib.sha256(item).digest()).digest()
+    element = stack.pop()
+    h160 = hashlib.new('ripemd160', hashlib.sha256(element).digest()).digest()
     stack.append(h160)
     return True
 
@@ -302,8 +332,8 @@ def op_hash160(stack):
 def op_hash256(stack):
     if len(stack) < 1:
         return False
-    item = stack.pop()
-    stack.append(hashlib.sha256(hashlib.sha256(item).digest()).digest())
+    element = stack.pop()
+    stack.append(hashlib.sha256(hashlib.sha256(element).digest()).digest())
     return True
 
 
@@ -316,12 +346,13 @@ def op_checksig(stack, z):
     try:
         point = S256Point.parse(sec_pubkey)
         sig = Signature.parse(der_signature)
-    except (ValueError, RuntimeError):
+    except (ValueError, RuntimeError) as e:
+        print(e)
         return False
     if point.verify(z, sig):
-        stack.append(1)
+        stack.append(encode_num(1))
     else:
-        stack.append(0)
+        stack.append(encode_num(0))
     return True
 
 
@@ -332,13 +363,13 @@ def op_checksigverify(stack, z):
 def op_checkmultisig(stack, z):
     if len(stack) < 1:
         return False
-    n = stack.pop()
+    n = decode_num(stack.pop())
     if len(stack) < n + 1:
         return False
     sec_pubkeys = []
     for _ in range(n):
         sec_pubkeys.append(stack.pop())
-    m = stack.pop()
+    m = decode_num(stack.pop())
     if len(stack) < m + 1:
         return False
     der_signatures = []
@@ -364,7 +395,7 @@ def op_checkmultisig(stack, z):
                 # did not find a point that signed it
                 print('no point found for sig {}'.format(sig.der().hex()))
                 return False
-        stack.append(1)
+        stack.append(encode_num(1))
     except (ValueError, RuntimeError):
         return False
     return True
@@ -379,15 +410,12 @@ def op_checklocktimeverify(stack, locktime, sequence):
         return False
     if len(stack) < 1:
         return False
-    if type(stack[-1]) == int:
-        item = stack[-1]
-    else:
-        item = little_endian_to_int(stack[-1])
-    if item < 0:
+    element = decode_num(stack[-1])
+    if element < 0:
         return False
-    if item < 500000000 and locktime > 500000000:
+    if element < 500000000 and locktime > 500000000:
         return False
-    if locktime < item:
+    if locktime < element:
         return False
     return True
 
@@ -397,20 +425,17 @@ def op_checksequenceverify(stack, version, sequence):
         return False
     if len(stack) < 1:
         return False
-    if type(stack[-1]) == int:
-        item = stack[-1]
-    else:
-        item = little_endian_to_int(stack[-1])
-    if item < 0:
+    element = decode_num(stack[-1])
+    if element < 0:
         return False
-    if item & (1 << 31) == (1 << 31):
+    if element & (1 << 31) == (1 << 31):
         if version < 2:
             return False
         elif sequence & (1 << 31) == (1 << 31):
             return False
-        elif item & (1 << 22) != sequence & (1 << 22):
+        elif element & (1 << 22) != sequence & (1 << 22):
             return False
-        elif item & 0xffff > sequence & 0xffff:
+        elif element & 0xffff > sequence & 0xffff:
             return False
     return True
 

@@ -13,8 +13,9 @@ from helper import (
     sha256,
 )
 from op import (
-    op_hash160,
     op_equal,
+    op_hash160,
+    op_verify,
     OP_CODE_FUNCTIONS,
     OP_CODE_NAMES,
 )
@@ -84,7 +85,9 @@ def print_state(items, item, stack):
         to_print += '    '
         if len(stack) >= total_height - i:
             current = stack[total_height - i - 1]
-            if type(current) == bytes:
+            if len(current) == 0:
+                current = '0'
+            else:
                 current = current.hex()[:24]
             to_print += '{0: <24}'.format(current)
         print(to_print)
@@ -203,7 +206,7 @@ class Script:
     def __add__(self, other):
         return Script(self.items + other.items)
 
-    def evaluate(self, tx_in):
+    def evaluate(self, z, version, locktime, sequence, witness):
         # create a copy as we may need to add to this list if we have a
         # RedeemScript
         items = self.items[:]
@@ -220,17 +223,17 @@ class Script:
                 if item in (172, 173, 174, 175):
                     # these are signing operations, they need a sig_hash
                     # to check against
-                    if not operation(stack, tx_in.sig_hash):
+                    if not operation(stack, z):
                         print('bad op: {}'.format(OP_CODE_NAMES[item]))
                         return False
                 elif item == 177:
                     # op_checklocktimeverify requires locktime and sequence
-                    if not operation(stack, tx_in.locktime, tx_in.sequence):
+                    if not operation(stack, locktime, sequence):
                         print('bad cltv')
                         return False
                 elif item == 178:
                     # op_checksequenceverify requires version and sequence
-                    if not operation(stack, tx_in.version, tx_in.sequence):
+                    if not operation(stack, version, sequence):
                         print('bad csv')
                         return False
                 elif item in (99, 100):
@@ -262,28 +265,26 @@ class Script:
                     if not op_equal(stack):
                         return False
                     # final result should be a 1
-                    if stack.pop() != 1:
-                        print('bad h160')
+                    if not op_verify(stack):
+                        print('bad p2sh h160')
                         return False
                     # hashes match! now add the RedeemScript
                     stream = BytesIO(redeem_script)
                     items.extend(Script.parse(stream).items)
                 # witness program version 0 rule. if stack items are:
                 # 0 <20 byte hash> this is p2wpkh
-                if len(stack) == 2 and stack[0] == 0x00 \
-                    and type(stack[1]) == bytes and len(stack[1]) == 20:
+                if len(stack) == 2 and stack[0] == b'' and len(stack[1]) == 20:
                     h160 = stack.pop()
                     stack.pop()
-                    items.extend(tx_in.witness_program)
+                    items.extend(witness)
                     items.extend(p2pkh_script(h160).items)
                 # witness program version 0 rule. if stack items are:
                 # 0 <32 byte hash> this is p2wsh
-                if len(stack) == 2 and stack[0] == 0x00 \
-                    and type(stack[1]) == bytes and len(stack[1]) == 32:
+                if len(stack) == 2 and stack[0] == b'' and len(stack[1]) == 32:
                     h256 = stack.pop()
                     stack.pop()
-                    items.extend(tx_in.witness_program[:-1])
-                    witness_script = tx_in.witness_program[-1]
+                    items.extend(witness[:-1])
+                    witness_script = witness[-1]
                     if h256 != sha256(witness_script):
                         print('bad sha256 {} vs {}'.format(h256.hex(), sha256(witness_script).hex()))
                         return False
@@ -296,7 +297,7 @@ class Script:
         if len(stack) == 0:
             print('empty stack')
             return False
-        if stack.pop() == 0:
+        if stack.pop() == b'':
             print('bad item left')
             return False
         return True
