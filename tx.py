@@ -16,6 +16,11 @@ from helper import (
 from script import p2pkh_script, Script
 
 
+def fetch_tx(hex_tx_hash, testnet=False):
+    tx_in = TxIn(bytes.fromhex(hex_tx_hash), 0)
+    return tx_in.fetch_tx(testnet=testnet)
+
+
 class Tx:
 
     def __init__(self, version, tx_ins, tx_outs, locktime, testnet=False):
@@ -101,7 +106,10 @@ class Tx:
             items = []
             for _ in range(num_items):
                 item_len = read_varint(s)
-                items.append(s.read(item_len))
+                if item_len == 0:
+                    items.append(0)
+                else:
+                    items.append(s.read(item_len))
             tx_in.witness_program = items
         # locktime is 4 bytes, little-endian
         locktime = little_endian_to_int(s.read(4))
@@ -180,11 +188,10 @@ class Tx:
         alt_tx_ins = []
         # iterate over self.tx_ins
         for tx_in in self.tx_ins:
-            # create a new TxIn that has a blank script_sig (b'') and add to alt_tx_ins
+            # create a new TxIn that has no script_sig and add to alt_tx_ins
             alt_tx_ins.append(TxIn(
                 prev_tx=tx_in.prev_tx,
                 prev_index=tx_in.prev_index,
-                script_sig=Script([]),
                 sequence=tx_in.sequence,
             ))
         # grab the input at the input_index
@@ -515,12 +522,10 @@ class TxIn:
             stream = BytesIO(raw)
             if raw[4] == 0:
                 # this is segwit serialization
-                tx = Tx.parse_segwit(stream)
+                tx = Tx.parse_segwit(stream, testnet=testnet)
             else:
                 # normal serialization
-                tx = Tx.parse(stream)
-                print(raw.hex())
-                print(tx.serialize().hex())
+                tx = Tx.parse(stream, testnet=testnet)
             if tx.hash() != self.prev_tx:
                 raise RuntimeError('server lied to us {} vs {}'.format(tx.hash().hex(), self.prev_tx.hex()))
             self.cache[self.prev_tx] = tx
@@ -582,15 +587,11 @@ class TxOut:
 class TxTest(TestCase):
 
     def test_parse_version(self):
-        raw_tx = bytes.fromhex('0100000001813f79011acb80925dfe69b3def355fe914bd1d96a3f5f71bf8303c6a989c7d1000000006b483045022100ed81ff192e75a3fd2304004dcadb746fa5e24c5031ccfcf21320b0277457c98f02207a986d955c6e0cb35d446a89d3f56100f4d7f67801c31967743a9c8e10615bed01210349fc4e631e3624a545de3f89f5d8684c7b8138bd94bdd531d2e213bf016b278afeffffff02a135ef01000000001976a914bc3b654dca7e56b04dca18f2566cdaf02e8d9ada88ac99c39800000000001976a9141c4bc762dd5423e332166702cb75f40df79fea1288ac19430600')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse(stream)
+        tx = fetch_tx('452c629d67e41baec3ac6f04fe744b4b9617f8f859c63b3002f8684e7a4fee03')
         self.assertEqual(tx.version, 1)
 
     def test_parse_inputs(self):
-        raw_tx = bytes.fromhex('0100000001813f79011acb80925dfe69b3def355fe914bd1d96a3f5f71bf8303c6a989c7d1000000006b483045022100ed81ff192e75a3fd2304004dcadb746fa5e24c5031ccfcf21320b0277457c98f02207a986d955c6e0cb35d446a89d3f56100f4d7f67801c31967743a9c8e10615bed01210349fc4e631e3624a545de3f89f5d8684c7b8138bd94bdd531d2e213bf016b278afeffffff02a135ef01000000001976a914bc3b654dca7e56b04dca18f2566cdaf02e8d9ada88ac99c39800000000001976a9141c4bc762dd5423e332166702cb75f40df79fea1288ac19430600')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse(stream)
+        tx = fetch_tx('452c629d67e41baec3ac6f04fe744b4b9617f8f859c63b3002f8684e7a4fee03')
         self.assertEqual(len(tx.tx_ins), 1)
         want = bytes.fromhex('d1c789a9c60383bf715f3f6ad9d14b91fe55f3deb369fe5d9280cb1a01793f81')
         self.assertEqual(tx.tx_ins[0].prev_tx, want)
@@ -600,9 +601,7 @@ class TxTest(TestCase):
         self.assertEqual(tx.tx_ins[0].sequence, 0xfffffffe)
 
     def test_parse_outputs(self):
-        raw_tx = bytes.fromhex('0100000001813f79011acb80925dfe69b3def355fe914bd1d96a3f5f71bf8303c6a989c7d1000000006b483045022100ed81ff192e75a3fd2304004dcadb746fa5e24c5031ccfcf21320b0277457c98f02207a986d955c6e0cb35d446a89d3f56100f4d7f67801c31967743a9c8e10615bed01210349fc4e631e3624a545de3f89f5d8684c7b8138bd94bdd531d2e213bf016b278afeffffff02a135ef01000000001976a914bc3b654dca7e56b04dca18f2566cdaf02e8d9ada88ac99c39800000000001976a9141c4bc762dd5423e332166702cb75f40df79fea1288ac19430600')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse(stream)
+        tx = fetch_tx('452c629d67e41baec3ac6f04fe744b4b9617f8f859c63b3002f8684e7a4fee03')
         self.assertEqual(len(tx.tx_outs), 2)
         want = 32454049
         self.assertEqual(tx.tx_outs[0].amount, want)
@@ -614,139 +613,108 @@ class TxTest(TestCase):
         self.assertEqual(tx.tx_outs[1].script_pubkey.serialize(), want)
 
     def test_parse_locktime(self):
-        raw_tx = bytes.fromhex('0100000001813f79011acb80925dfe69b3def355fe914bd1d96a3f5f71bf8303c6a989c7d1000000006b483045022100ed81ff192e75a3fd2304004dcadb746fa5e24c5031ccfcf21320b0277457c98f02207a986d955c6e0cb35d446a89d3f56100f4d7f67801c31967743a9c8e10615bed01210349fc4e631e3624a545de3f89f5d8684c7b8138bd94bdd531d2e213bf016b278afeffffff02a135ef01000000001976a914bc3b654dca7e56b04dca18f2566cdaf02e8d9ada88ac99c39800000000001976a9141c4bc762dd5423e332166702cb75f40df79fea1288ac19430600')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse(stream)
+        tx = fetch_tx('452c629d67e41baec3ac6f04fe744b4b9617f8f859c63b3002f8684e7a4fee03')
         self.assertEqual(tx.locktime, 410393)
 
     def test_serialize(self):
         raw_tx = bytes.fromhex('0100000001813f79011acb80925dfe69b3def355fe914bd1d96a3f5f71bf8303c6a989c7d1000000006b483045022100ed81ff192e75a3fd2304004dcadb746fa5e24c5031ccfcf21320b0277457c98f02207a986d955c6e0cb35d446a89d3f56100f4d7f67801c31967743a9c8e10615bed01210349fc4e631e3624a545de3f89f5d8684c7b8138bd94bdd531d2e213bf016b278afeffffff02a135ef01000000001976a914bc3b654dca7e56b04dca18f2566cdaf02e8d9ada88ac99c39800000000001976a9141c4bc762dd5423e332166702cb75f40df79fea1288ac19430600')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse(stream)
+        tx = fetch_tx('452c629d67e41baec3ac6f04fe744b4b9617f8f859c63b3002f8684e7a4fee03')
         self.assertEqual(tx.serialize(), raw_tx)
 
     def test_input_value(self):
         tx_hash = 'd1c789a9c60383bf715f3f6ad9d14b91fe55f3deb369fe5d9280cb1a01793f81'
         index = 0
         want = 42505594
-        tx_in = TxIn(
-            prev_tx=bytes.fromhex(tx_hash),
-            prev_index=index,
-            script_sig=Script([]),
-            sequence=0,
-        )
+        tx_in = TxIn(bytes.fromhex(tx_hash), index)
         self.assertEqual(tx_in.value(), want)
 
     def test_input_pubkey(self):
         tx_hash = 'd1c789a9c60383bf715f3f6ad9d14b91fe55f3deb369fe5d9280cb1a01793f81'
         index = 0
-        tx_in = TxIn(
-            prev_tx=bytes.fromhex(tx_hash),
-            prev_index=index,
-            script_sig=Script([]),
-            sequence=0,
-        )
-        want = bytes.fromhex('1976a914a802fc56c704ce87c42d7c92eb75e7896bdc41ae88ac')
-        self.assertEqual(tx_in.script_pubkey().serialize(), want)
+        tx_in = TxIn(bytes.fromhex(tx_hash), index)
+        want = '1976a914a802fc56c704ce87c42d7c92eb75e7896bdc41ae88ac'
+        self.assertEqual(tx_in.script_pubkey().serialize().hex(), want)
 
     def test_fee(self):
-        raw_tx = bytes.fromhex('0100000001813f79011acb80925dfe69b3def355fe914bd1d96a3f5f71bf8303c6a989c7d1000000006b483045022100ed81ff192e75a3fd2304004dcadb746fa5e24c5031ccfcf21320b0277457c98f02207a986d955c6e0cb35d446a89d3f56100f4d7f67801c31967743a9c8e10615bed01210349fc4e631e3624a545de3f89f5d8684c7b8138bd94bdd531d2e213bf016b278afeffffff02a135ef01000000001976a914bc3b654dca7e56b04dca18f2566cdaf02e8d9ada88ac99c39800000000001976a9141c4bc762dd5423e332166702cb75f40df79fea1288ac19430600')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse(stream)
+        tx = fetch_tx('452c629d67e41baec3ac6f04fe744b4b9617f8f859c63b3002f8684e7a4fee03')
         self.assertEqual(tx.fee(), 40000)
-        raw_tx = bytes.fromhex('010000000456919960ac691763688d3d3bcea9ad6ecaf875df5339e148a1fc61c6ed7a069e010000006a47304402204585bcdef85e6b1c6af5c2669d4830ff86e42dd205c0e089bc2a821657e951c002201024a10366077f87d6bce1f7100ad8cfa8a064b39d4e8fe4ea13a7b71aa8180f012102f0da57e85eec2934a82a585ea337ce2f4998b50ae699dd79f5880e253dafafb7feffffffeb8f51f4038dc17e6313cf831d4f02281c2a468bde0fafd37f1bf882729e7fd3000000006a47304402207899531a52d59a6de200179928ca900254a36b8dff8bb75f5f5d71b1cdc26125022008b422690b8461cb52c3cc30330b23d574351872b7c361e9aae3649071c1a7160121035d5c93d9ac96881f19ba1f686f15f009ded7c62efe85a872e6a19b43c15a2937feffffff567bf40595119d1bb8a3037c356efd56170b64cbcc160fb028fa10704b45d775000000006a47304402204c7c7818424c7f7911da6cddc59655a70af1cb5eaf17c69dadbfc74ffa0b662f02207599e08bc8023693ad4e9527dc42c34210f7a7d1d1ddfc8492b654a11e7620a0012102158b46fbdff65d0172b7989aec8850aa0dae49abfb84c81ae6e5b251a58ace5cfeffffffd63a5e6c16e620f86f375925b21cabaf736c779f88fd04dcad51d26690f7f345010000006a47304402200633ea0d3314bea0d95b3cd8dadb2ef79ea8331ffe1e61f762c0f6daea0fabde022029f23b3e9c30f080446150b23852028751635dcee2be669c2a1686a4b5edf304012103ffd6f4a67e94aba353a00882e563ff2722eb4cff0ad6006e86ee20dfe7520d55feffffff0251430f00000000001976a914ab0c0b2e98b1ab6dbf67d4750b0a56244948a87988ac005a6202000000001976a9143c82d7df364eb6c75be8c80df2b3eda8db57397088ac46430600')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse(stream)
+        tx = fetch_tx('ee51510d7bbabe28052038d1deb10c03ec74f06a79e21913c6fcf48d56217c87')
         self.assertEqual(tx.fee(), 140500)
 
     def test_sig_hash(self):
-        raw_tx = bytes.fromhex('0100000001813f79011acb80925dfe69b3def355fe914bd1d96a3f5f71bf8303c6a989c7d1000000006b483045022100ed81ff192e75a3fd2304004dcadb746fa5e24c5031ccfcf21320b0277457c98f02207a986d955c6e0cb35d446a89d3f56100f4d7f67801c31967743a9c8e10615bed01210349fc4e631e3624a545de3f89f5d8684c7b8138bd94bdd531d2e213bf016b278afeffffff02a135ef01000000001976a914bc3b654dca7e56b04dca18f2566cdaf02e8d9ada88ac99c39800000000001976a9141c4bc762dd5423e332166702cb75f40df79fea1288ac19430600')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse(stream)
+        tx = fetch_tx('452c629d67e41baec3ac6f04fe744b4b9617f8f859c63b3002f8684e7a4fee03')
         want = int('27e0c5994dec7824e56dec6b2fcb342eb7cdb0d0957c2fce9882f715e85d81a6', 16)
         self.assertEqual(tx.sig_hash(0), want)
 
     def test_verify_input_p2pkh(self):
-        # p2pkh
-        raw_tx = bytes.fromhex('0100000001813f79011acb80925dfe69b3def355fe914bd1d96a3f5f71bf8303c6a989c7d1000000006b483045022100ed81ff192e75a3fd2304004dcadb746fa5e24c5031ccfcf21320b0277457c98f02207a986d955c6e0cb35d446a89d3f56100f4d7f67801c31967743a9c8e10615bed01210349fc4e631e3624a545de3f89f5d8684c7b8138bd94bdd531d2e213bf016b278afeffffff02a135ef01000000001976a914bc3b654dca7e56b04dca18f2566cdaf02e8d9ada88ac99c39800000000001976a9141c4bc762dd5423e332166702cb75f40df79fea1288ac19430600')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse(stream)
+        tx = fetch_tx('452c629d67e41baec3ac6f04fe744b4b9617f8f859c63b3002f8684e7a4fee03')
         self.assertTrue(tx.verify_input(0))
 
     def test_verify_input_p2sh(self):
-        # p2sh
-        raw_tx = bytes.fromhex('0100000001868278ed6ddfb6c1ed3ad5f8181eb0c7a385aa0836f01d5e4789e6bd304d87221a000000db00483045022100dc92655fe37036f47756db8102e0d7d5e28b3beb83a8fef4f5dc0559bddfb94e02205a36d4e4e6c7fcd16658c50783e00c341609977aed3ad00937bf4ee942a8993701483045022100da6bee3c93766232079a01639d07fa869598749729ae323eab8eef53577d611b02207bef15429dcadce2121ea07f233115c6f09034c0be68db99980b9a6c5e75402201475221022626e955ea6ea6d98850c994f9107b036b1334f18ca8830bfff1295d21cfdb702103b287eaf122eea69030a0e9feed096bed8045c8b98bec453e1ffac7fbdbd4bb7152aeffffffff04d3b11400000000001976a914904a49878c0adfc3aa05de7afad2cc15f483a56a88ac7f400900000000001976a914418327e3f3dda4cf5b9089325a4b95abdfa0334088ac722c0c00000000001976a914ba35042cfe9fc66fd35ac2224eebdafd1028ad2788acdc4ace020000000017a91474d691da1574e6b3c192ecfb52cc8984ee7b6c568700000000')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse(stream)
+        tx = fetch_tx('46df1a9484d0a81d03ce0ee543ab6e1a23ed06175c104a178268fad381216c2b')
         self.assertTrue(tx.verify_input(0))
 
     def test_verify_input_p2wpkh(self):
-        # p2wpkh
-        raw_tx = bytes.fromhex('0100000000010115e180dc28a2327e687facc33f10f2a20da717e5548406f7ae8b4c811072f8560100000000ffffffff0100b4f505000000001976a9141d7cd6c75c2e86f4cbf98eaed221b30bd9a0b92888ac02483045022100df7b7e5cda14ddf91290e02ea10786e03eb11ee36ec02dd862fe9a326bbcb7fd02203f5b4496b667e6e281cc654a2da9e4f08660c620a1051337fa8965f727eb19190121038262a6c6cec93c2d3ecd6c6072efea86d02ff8e3328bbd0242b20af3425990ac00000000')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse_segwit(stream, testnet=True)
+        tx = fetch_tx('d869f854e1f8788bcff294cc83b280942a8c728de71eb709a2c29d10bfe21b7c', testnet=True)
         self.assertTrue(tx.verify_input(0))
 
     def test_verify_input_p2sh_p2wpkh(self):
-        # p2sh-p2wpkh
-        raw_tx = bytes.fromhex('0200000000010140d43a99926d43eb0e619bf0b3d83b4a31f60c176beecfb9d35bf45e54d0f7420100000017160014a4b4ca48de0b3fffc15404a1acdc8dbaae226955ffffffff0100e1f5050000000017a9144a1154d50b03292b3024370901711946cb7cccc387024830450221008604ef8f6d8afa892dee0f31259b6ce02dd70c545cfcfed8148179971876c54a022076d771d6e91bed212783c9b06e0de600fab2d518fad6f15a2b191d7fbd262a3e0121039d25ab79f41f75ceaf882411fd41fa670a4c672c23ffaf0e361a969cde0692e800000000')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse_segwit(stream)
+        tx = fetch_tx('c586389e5e4b3acb9d6c8be1c19ae8ab2795397633176f5a6442a261bbdefc3a')
         self.assertTrue(tx.verify_input(0))
 
     def test_verify_input_p2wsh(self):
-        # p2wsh
-        raw_tx = bytes.fromhex('0100000000010115e180dc28a2327e687facc33f10f2a20da717e5548406f7ae8b4c811072f8560200000000ffffffff0188b3f505000000001976a9141d7cd6c75c2e86f4cbf98eaed221b30bd9a0b92888ac02483045022100f9d3fe35f5ec8ceb07d3db95adcedac446f3b19a8f3174e7e8f904b1594d5b43022074d995d89a278bd874d45d0aea835d3936140397392698b7b5bbcdef8d08f2fd012321038262a6c6cec93c2d3ecd6c6072efea86d02ff8e3328bbd0242b20af3425990acac00000000')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse_segwit(stream, testnet=True)
+        tx = fetch_tx('78457666f82c28aa37b74b506745a7c7684dc7842a52a457b09f09446721e11c', testnet=True)
         self.assertTrue(tx.verify_input(0))
 
     def test_verify_input_p2sh_p2wsh(self):
-        # p2sh-p2wsh
-        raw_tx = bytes.fromhex('0100000000010115e180dc28a2327e687facc33f10f2a20da717e5548406f7ae8b4c811072f856040000002322002001d5d92effa6ffba3efa379f9830d0f75618b13393827152d26e4309000e88b1ffffffff0188b3f505000000001976a9141d7cd6c75c2e86f4cbf98eaed221b30bd9a0b92888ac02473044022038421164c6468c63dc7bf724aa9d48d8e5abe3935564d38182addf733ad4cd81022076362326b22dd7bfaf211d5b17220723659e4fe3359740ced5762d0e497b7dcc012321038262a6c6cec93c2d3ecd6c6072efea86d02ff8e3328bbd0242b20af3425990acac00000000')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse_segwit(stream, testnet=True)
+        tx = fetch_tx('954f43dbb30ad8024981c07d1f5eb6c9fd461e2cf1760dd1283f052af746fc88', testnet=True)
         self.assertTrue(tx.verify_input(0))
 
     def test_verify_input_if(self):
-        # op_if
-        raw_tx = bytes.fromhex('0200000001d4b9e8ec436bdf27164df27c7c3609024500d049037940513c94dac8d3a999ed0100000090041234567800473044022071b0d6894ae2252bd67f8d9882c814a2a59e1c7ae8b8f1117db17a484538833a0220680f44f3150b652c49b6523eff5e750d460f3306ed669835db7c3095596211bf0141049343773d05d5a07f103914d5294ca742db124babd2c2cac5f84e6114f192f07c1e44c956c737a60369fbf4f5e6324dc005ba38d156f61232f9251fec8ee3e262fdffffff01006ebe00000000001976a9144f2465fec27ad88917c9fcb72b09ade39b8911ed88ac6c3c1300')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse(stream, testnet=True)
+        tx = fetch_tx('61ba3a8b40706931b72929628cf1a07d604f158c8350055725c664d544d00030', testnet=True)
         self.assertTrue(tx.verify_input(0))
 
     def test_verify_input_cltv(self):
-        # op_checklocktimeverify
-        raw_tx = bytes.fromhex('0100000001726f90610c79af5f237326855d63355c99628593da6ba96dc0942b256af0aa12000000008b47304402205b1f7ae4145526f33128d92aa74e3b8f6c7369e063506658c4a17119ce9526e00220015df72bed40c5ead4bcd7b732aa36627a8baa6d6b7d38e9de34b9fdb27eac56012102f0141fadbe6757ed04b7a25dad0c78af8b97af09744318cf15c66a4566fa2ec920042d25ec57b17576a914225d81ac31f9c8368033e1d380b8be1860d53c5d88ac0000000001007a3f00000000001976a9146b3a858370ea6ed841633611fcfdeae7bf85f86288ac9125ec57')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse(stream, testnet=True)
+        tx = fetch_tx('ca2c7347aa2fdff68052f026fa9a092448c2451f774ca53f3a2b05d74405addc', testnet=True)
         self.assertTrue(tx.verify_input(0))
 
     def test_verify_input_csv(self):
-        # op_checksequenceverify
-        raw_tx = bytes.fromhex('0200000001f4db00105cdc7cab7d26ae018154540faa2a20872a1e263c6948c5a4e44d060f00000000f947304402204c7cbcc610ac5ee744dc7de6fc31421217dbd066e41fd377dbe16dbd70372d3d02201e74b66967b44548c007a011d98bb42a9f22651392232b87a640dcf8ad55e1d20100004cad6352210399e3dde1d1853dbd99c81ba4f2c0cca351b3cceecce7cd0bd59acc5789672135210327f017c35a46b759536309e6de256ad44ad609c1c4aed0e2cdb82f62490f75f852ae6763a914a7ec62542b0d393d43442aadf8d55f7da1e303cb88210399e3dde1d1853dbd99c81ba4f2c0cca351b3cceecce7cd0bd59acc5789672135ac6755b275210399e3dde1d1853dbd99c81ba4f2c0cca351b3cceecce7cd0bd59acc5789672135ac68680500000002c28d0000000000001976a914d36d5a91d3f05b2c23cf4fdcac88e4f8b50cec9088ac00000000000000001e6a1cdbb957b39547c4b841700768d623a3f4c849743272bc7783855c9c4d00000000')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse(stream, testnet=True)
+        tx = fetch_tx('d208b659eaca2640f732b07b11ea9800c1a0bb4ffdc03aaf82af76c1787570ac', testnet=True)
         self.assertTrue(tx.verify_input(0))
-        self.assertEqual(tx.serialize(), raw_tx)
 
     def test_verify_input_csv_2(self):
-        raw_tx = bytes.fromhex('02000000017110429dbcfdb3d19836bf273766d1b259d8fe09c3a1121594fe3c69110054af00000000bd47304402204705f99c2571936779c8c095e96d066dc9e3ef0b5be5d7967816c1083945015f022059b7a1c3b02c541c8c756424c6b4845120e5e1e9a350d22c15289604ef97b66701004c7263a8202c153075103a7c81c80de8c737f215cdddf46e9028b300e90e57e53189ecd2fa8821027db4b6ad6c26333dfac2864040badb7d7cefb256e4aa01bcd38cd8a53b30ba41ac6703010040b2752103c7fed01e48237da2a2dcf4bc2f21ef56daeae1f8552b41bcaacdbaaa52cfc1beac680100400001d07e0100000000001976a9144657c68523eb9cd215670c8fc0b0b63952626e1588ac00000000')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse(stream, testnet=True)
+        tx = fetch_tx('807d464fff227ce98cfb5f1292069e2793e99f21b0539a1729cc460af32add77', testnet=True)
         self.assertTrue(tx.verify_input(0))
-        self.assertEqual(tx.serialize(), raw_tx)
+
+    def test_verify_lightning_local_success(self):
+        tx = fetch_tx('0191535bfda21f5dfec1c904775c5e2fbee8a985815c88d77258a0b42dba3526')
+        self.assertTrue(tx.verify_input(0))
+
+    def test_verify_lightning_local_penalty(self):
+        tx = fetch_tx('0da5e5dba5e793d50820c2275dab74912b121c8b7e34ce32a9dbfd4567a9bf8e')
+        self.assertTrue(tx.verify_input(0))
+
+    def test_verify_lightning_sender_timeout(self):
+        tx = fetch_tx('a16f6d78a58d31fe7459887adf5bd6b4dd95277ea375d250c700cde9fa908bdb')
+        self.assertTrue(tx.verify_input(0))
+
+    def test_verify_lightning_sender_preimage(self):
+        tx = fetch_tx('89c744f0806a57a9b4634c320703cc941aaf272f290296373b709499064335e5')
+        self.assertTrue(tx.verify_input(0))
+
+    def test_verify_lightning_receiver_timeout(self):
+        tx = fetch_tx('f9af9b93d66c7e5ee7dcbe0b53faa3d17aa6b9f4cc5b19f0985917b57d82c59a')
+        self.assertTrue(tx.verify_input(0))
+
+    def test_verify_lightning_receiver_preimage(self):
+        tx = fetch_tx('36b1aff2ad0076be95b1ee1dc4036374998760c80c6583a6478a699e86658ac0')
+        self.assertTrue(tx.verify_input(0))
 
     def test_sign_input_p2pkh(self):
         private_key = PrivateKey(secret=8675309)
         tx_ins = []
         prev_tx = bytes.fromhex('0025bc3c0fa8b7eb55b9437fdbd016870d18e0df0ace7bc9864efc38414147c8')
-        tx_ins.append(TxIn(
-            prev_tx=prev_tx,
-            prev_index=0,
-            script_sig=Script([]),
-            sequence=0xffffffff,
-        ))
+        tx_ins.append(TxIn(prev_tx, 0))
         tx_outs = []
         h160 = decode_base58('mzx5YhAH9kNHtcN481u6WkjeHjYtVeKVh2')
         tx_outs.append(TxOut(amount=int(0.99 * 100000000), script_pubkey=p2pkh_script(h160)))
@@ -763,17 +731,11 @@ class TxTest(TestCase):
         self.assertTrue(tx.sign_input_p2pkh(0, private_key))
 
     def test_is_coinbase(self):
-        raw_tx = bytes.fromhex('01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff5e03d71b07254d696e656420627920416e74506f6f6c20626a31312f4542312f4144362f43205914293101fabe6d6d678e2c8c34afc36896e7d9402824ed38e856676ee94bfdb0c6c4bcd8b2e5666a0400000000000000c7270000a5e00e00ffffffff01faf20b58000000001976a914338c84849423992471bffb1a54a8d9b1d69dc28a88ac00000000')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse(stream)
+        tx = fetch_tx('51bdce0f8a1edd5bc023fd4de42edb63478ca67fc8a37a6e533229c17d794d3f')
         self.assertTrue(tx.is_coinbase())
 
     def test_coinbase_height(self):
-        raw_tx = bytes.fromhex('01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff5e03d71b07254d696e656420627920416e74506f6f6c20626a31312f4542312f4144362f43205914293101fabe6d6d678e2c8c34afc36896e7d9402824ed38e856676ee94bfdb0c6c4bcd8b2e5666a0400000000000000c7270000a5e00e00ffffffff01faf20b58000000001976a914338c84849423992471bffb1a54a8d9b1d69dc28a88ac00000000')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse(stream)
+        tx = fetch_tx('51bdce0f8a1edd5bc023fd4de42edb63478ca67fc8a37a6e533229c17d794d3f')
         self.assertEqual(tx.coinbase_height(), 465879)
-        raw_tx = bytes.fromhex('0100000001813f79011acb80925dfe69b3def355fe914bd1d96a3f5f71bf8303c6a989c7d1000000006b483045022100ed81ff192e75a3fd2304004dcadb746fa5e24c5031ccfcf21320b0277457c98f02207a986d955c6e0cb35d446a89d3f56100f4d7f67801c31967743a9c8e10615bed01210349fc4e631e3624a545de3f89f5d8684c7b8138bd94bdd531d2e213bf016b278afeffffff02a135ef01000000001976a914bc3b654dca7e56b04dca18f2566cdaf02e8d9ada88ac99c39800000000001976a9141c4bc762dd5423e332166702cb75f40df79fea1288ac19430600')
-        stream = BytesIO(raw_tx)
-        tx = Tx.parse(stream)
+        tx = fetch_tx('452c629d67e41baec3ac6f04fe744b4b9617f8f859c63b3002f8684e7a4fee03')
         self.assertIsNone(tx.coinbase_height())

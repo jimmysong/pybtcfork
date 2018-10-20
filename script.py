@@ -20,7 +20,7 @@ from op import (
 )
 
 
-DEBUG=True
+DEBUG = True
 
 
 def p2pkh_script(h160):
@@ -208,6 +208,8 @@ class Script:
         # RedeemScript
         items = self.items[:]
         stack = []
+        if DEBUG:
+            print_state(items, b'', stack)
         while len(items) > 0:
             item = items.pop(0)
             if DEBUG:
@@ -287,7 +289,10 @@ class Script:
                         return False
                     # hashes match! now add the Witness Script
                     stream = BytesIO(encode_varint(len(witness_script)) + witness_script)
-                    items.extend(Script.parse(stream).items)
+                    witness_script_items = Script.parse(stream).items
+                    items.extend(witness_script_items)
+                    if DEBUG:
+                        print_state(items, b'', stack)
         if len(stack) == 0:
             print('empty stack')
             return False
@@ -375,12 +380,9 @@ class ScriptTest(TestCase):
         script_pubkey_raw = bytes.fromhex('1976a914bc3b654dca7e56b04dca18f2566cdaf02e8d9ada88ac')
         script_pubkey = Script.parse(BytesIO(script_pubkey_raw))
         self.assertEqual(script_pubkey.serialize(), script_pubkey_raw)
-
         script_sig_raw = bytes.fromhex('6b483045022100ed81ff192e75a3fd2304004dcadb746fa5e24c5031ccfcf21320b0277457c98f02207a986d955c6e0cb35d446a89d3f56100f4d7f67801c31967743a9c8e10615bed01210349fc4e631e3624a545de3f89f5d8684c7b8138bd94bdd531d2e213bf016b278a')
         script_sig = Script.parse(BytesIO(script_sig_raw))
         self.assertEqual(script_sig.serialize(), script_sig_raw)
-        self.assertEqual(script_sig.signature(), bytes.fromhex('3045022100ed81ff192e75a3fd2304004dcadb746fa5e24c5031ccfcf21320b0277457c98f02207a986d955c6e0cb35d446a89d3f56100f4d7f67801c31967743a9c8e10615bed01'))
-        self.assertEqual(script_sig.sec_pubkey(), bytes.fromhex('0349fc4e631e3624a545de3f89f5d8684c7b8138bd94bdd531d2e213bf016b278a'))
 
     def test_p2sh(self):
         script_pubkey_raw = bytes.fromhex('17a91474d691da1574e6b3c192ecfb52cc8984ee7b6c5687')

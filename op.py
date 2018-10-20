@@ -137,6 +137,7 @@ def op_notif(stack, items):
     false_items = []
     current_array = true_items
     found = False
+    num_endifs_needed = 1
     while len(items) > 0:
         item = items.pop(0)
         if item in (99, 100):
@@ -194,11 +195,35 @@ def op_dup(stack):
     return True
 
 
+def op_swap(stack):
+    if len(stack) < 2:
+        return False
+    item1 = stack.pop()
+    item2 = stack.pop()
+    stack.append(item1)
+    stack.append(item2)
+    return True
+
+
+def op_size(stack):
+    if len(stack) < 1:
+        return False
+    if stack[-1] == 0:
+        stack.append(0)
+    else:
+        stack.append(len(stack[-1]))
+    return True
+
+
 def op_equal(stack):
     if len(stack) < 2:
         return False
     item1 = stack.pop()
     item2 = stack.pop()
+    if type(item1) == bytes:
+        item1 = little_endian_to_int(item1)
+    if type(item2) == bytes:
+        item2 = little_endian_to_int(item2)
     if item1 == item2:
         stack.append(1)
     else:
@@ -267,6 +292,8 @@ def op_hash160(stack):
     if len(stack) < 1:
         return False
     item = stack.pop()
+    if item == 0:
+        item = b''
     h160 = hashlib.new('ripemd160', hashlib.sha256(item).digest()).digest()
     stack.append(h160)
     return True
@@ -419,7 +446,7 @@ OP_CODE_FUNCTIONS = {
     #    107: op_toaltstack,
     #    108: op_fromaltstack,
     #    109: op_2drop,
-    #    110: op_2dup,
+    110: op_2dup,
     #    111: op_3dup,
     #    112: op_2over,
     #    113: op_2rot,
@@ -433,13 +460,13 @@ OP_CODE_FUNCTIONS = {
     #    121: op_pick,
     #    122: op_roll,
     #    123: op_rot,
-    #    124: op_swap,
+    124: op_swap,
     #    125: op_tuck,
     #    126: op_cat,
     #    127: op_substr,
     #    128: op_left,
     #    129: op_right,
-    #    130: op_size,
+    130: op_size,
     #    131: op_invert,
     #    132: op_and,
     #    133: op_or,
