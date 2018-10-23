@@ -1,0 +1,14 @@
+[report]
+omit =
+     */certifi/*
+     */chardet/*
+     */encodings/*
+     */hmac.py
+     */http/*
+     */idna/*
+     */mimetypes.py
+     */netrc.py
+     */requests/*
+     */stringprep.py
+     */urllib3/*
+show_missing = True

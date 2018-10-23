@@ -1,5 +1,7 @@
 import hashlib
 
+from unittest import TestCase
+
 from ecc import S256Point, Signature
 
 
@@ -765,11 +767,8 @@ OP_CODE_FUNCTIONS = {
     95: op_15,
     96: op_16,
     97: op_nop,
-    #    98: op_ver,
     99: op_if,
     100: op_notif,
-    #    101: op_verif,
-    #    102: op_vernotif,
     105: op_verify,
     106: op_return,
     107: op_toaltstack,
@@ -794,8 +793,6 @@ OP_CODE_FUNCTIONS = {
     130: op_size,
     135: op_equal,
     136: op_equalverify,
-    #    137: op_reserved1,
-    #    138: op_reserved2,
     139: op_1add,
     140: op_1sub,
     143: op_negate,
@@ -836,10 +833,6 @@ OP_CODE_FUNCTIONS = {
     183: op_nop,
     184: op_nop,
     185: op_nop,
-    #    252: op_nulldata,
-    #    253: op_pubkeyhash,
-    #    254: op_pubkey,
-    #    255: op_invalidopcode,
 }
 
 OP_CODE_NAMES = {
@@ -848,7 +841,6 @@ OP_CODE_NAMES = {
     77: 'OP_PUSHDATA2',
     78: 'OP_PUSHDATA4',
     79: 'OP_1NEGATE',
-    80: 'OP_RESERVED',
     81: 'OP_1',
     82: 'OP_2',
     83: 'OP_3',
@@ -866,11 +858,8 @@ OP_CODE_NAMES = {
     95: 'OP_15',
     96: 'OP_16',
     97: 'OP_NOP',
-    98: 'OP_VER',
     99: 'OP_IF',
     100: 'OP_NOTIF',
-    101: 'OP_VERIF',
-    102: 'OP_VERNOTIF',
     103: 'OP_ELSE',
     104: 'OP_ENDIF',
     105: 'OP_VERIFY',
@@ -897,8 +886,6 @@ OP_CODE_NAMES = {
     130: 'OP_SIZE',
     135: 'OP_EQUAL',
     136: 'OP_EQUALVERIFY',
-    137: 'OP_RESERVED1',
-    138: 'OP_RESERVED2',
     139: 'OP_1ADD',
     140: 'OP_1SUB',
     143: 'OP_NEGATE',
@@ -939,8 +926,83 @@ OP_CODE_NAMES = {
     183: 'OP_NOP8',
     184: 'OP_NOP9',
     185: 'OP_NOP10',
-    252: 'OP_NULLDATA',
-    253: 'OP_PUBKEYHASH',
-    254: 'OP_PUBKEY',
-    255: 'OP_INVALIDOPCODE',
 }
+
+
+class OpTest(TestCase):
+
+    def test_argument_stack(self):
+        test_cases = (
+            (op_verify, 1),
+            (op_2drop, 2),
+            (op_2dup, 2),
+            (op_3dup, 3),
+            (op_2over, 4),
+            (op_2rot, 6),
+            (op_2swap, 4),
+            (op_ifdup, 1),
+            (op_drop, 1),
+            (op_dup, 1),
+            (op_nip, 2),
+            (op_over, 2),
+            (op_pick, 1),
+            (op_roll, 1),
+            (op_rot, 3),
+            (op_swap, 2),
+            (op_tuck, 2),
+            (op_size, 1),
+            (op_equal, 2),
+            (op_equalverify, 2),
+            (op_1add, 1),
+            (op_1sub, 1),
+            (op_negate, 1),
+            (op_abs, 1),
+            (op_not, 1),
+            (op_0notequal, 1),
+            (op_add, 2),
+            (op_sub, 2),
+            (op_booland, 2),
+            (op_boolor, 2),
+            (op_numequal, 2),
+            (op_numequalverify, 2),
+            (op_numnotequal, 2),
+            (op_lessthan, 2),
+            (op_greaterthan, 2),
+            (op_lessthanorequal, 2),
+            (op_greaterthanorequal, 2),
+            (op_min, 2),
+            (op_max, 2),
+            (op_within, 3),
+            (op_ripemd160, 1),
+            (op_sha1, 1),
+            (op_sha256, 1),
+            (op_hash160, 1),
+            (op_hash256, 1),
+        )
+        for func, num_items in test_cases:
+            self.assertFalse(func([0] * (num_items - 1)))
+
+    def test_ifs(self):
+        test_cases = (op_if, op_notif)
+        for func in test_cases:
+            self.assertFalse(func([], []))
+
+    def test_altstack(self):
+        self.assertFalse(op_toaltstack([], []))
+        self.assertFalse(op_fromaltstack([], []))
+
+    def test_sig(self):
+        test_cases = (
+            (op_checksig, 2),
+            (op_checksigverify, 2),
+            (op_checkmultisig, 1),
+            (op_checkmultisigverify, 1),
+        )
+        for func, num_items in test_cases:
+            self.assertFalse(func([0] * (num_items - 1), 0))
+
+    def test_cltv(self):
+        self.assertFalse(op_checklocktimeverify([], 0, 0))
+
+    def test_csv(self):
+        self.assertFalse(op_checksequenceverify([], 0, 0))

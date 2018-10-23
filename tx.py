@@ -7,14 +7,23 @@ import requests
 from ecc import PrivateKey
 from helper import (
     decode_base58,
+    decode_bech32,
     double_sha256,
     encode_varint,
+    hash160,
     int_to_little_endian,
     little_endian_to_int,
     read_varint,
     SIGHASH_ALL,
 )
-from script import p2pkh_script, Script
+from script import (
+    multisig_redeem_script,
+    p2pkh_script,
+    p2sh_script,
+    p2wpkh_script,
+    p2wsh_script,
+    Script,
+)
 
 
 class TxFetcher:
@@ -37,10 +46,14 @@ class TxFetcher:
             except ValueError:
                 raise RuntimeError(response.text)
             # make sure the tx we got matches to the hash we requested
-            computed = double_sha256(raw)[::-1].hex()
+            tx = Tx.parse(BytesIO(raw), testnet=testnet)
+            if tx.segwit:
+                computed = tx.id()
+            else:
+                computed = double_sha256(raw)[::-1].hex()
             if computed != tx_id:
                 raise RuntimeError('server lied: {} vs {}'.format(computed, tx_id))
-            cls.cache[tx_id] = Tx.parse(BytesIO(raw), testnet=testnet)
+            cls.cache[tx_id] = tx
         cls.cache[tx_id].testnet = testnet
         return cls.cache[tx_id]
 
@@ -812,3 +825,102 @@ class TxTest(TestCase):
         self.assertEqual(tx.coinbase_height(), 465879)
         tx = TxFetcher.fetch('452c629d67e41baec3ac6f04fe744b4b9617f8f859c63b3002f8684e7a4fee03')
         self.assertIsNone(tx.coinbase_height())
+
+    def test_p2sh_multisig(self):
+        secrets = (b'jimmy@programmingblockchain.com test1', b'jimmy@programmingblockchain.com test2')
+        private_keys = [PrivateKey(little_endian_to_int(double_sha256(s))) for s in secrets]
+        points = [p.point for p in private_keys]
+        redeem_script = multisig_redeem_script(2, points)
+        prev_tx = bytes.fromhex('770e48abf1051fe8df7d906d6a6589a3a6fe4da09edd5e4172ee04db3e88dfb8')
+        prev_index = 0
+        fee = int(100000000*0.001)
+        tx_in = TxIn(prev_tx, prev_index)
+        h160 = redeem_script.hash160()
+        script_pubkey = p2sh_script(h160)
+        amount = tx_in.value(testnet=True) - fee - 1000000
+        tx_out_1 = TxOut(amount, script_pubkey)
+        h160 = decode_base58('2N3a8NdfeA7SAurCGsd5k9AEYvbszipz3Jz')
+        script_pubkey = p2sh_script(h160)
+        tx_out_2 = TxOut(1000000, script_pubkey)
+        t = Tx(1, [tx_in], [tx_out_1, tx_out_2], 0, testnet=True)
+        t.sign_input_p2sh_multisig(0, private_keys, redeem_script)
+        want = '0100000001b8df883edb04ee72415edd9ea04dfea6a389656a6d907ddfe81f05f1ab480e7700000000db004830450221009bb0421ba4193dcefffacc4f7e99491e524719fdb89dd438adcfd1de8f82298402202d605605365d9b8492953eddfcd158fc0ac728dab89269a720c5621e313c5f2601483045022100c619ed09b0f20e3b47f206f92fe1903c8ae6505088e67b3d2f69ddc3ac3207e002204ea256baab6e3543fa2b836917994e6f59e8aeb23d5ec213dc2279adb3e1a7e9014752210223136797cb0d7596cb5bd476102fe3aface2a06338e1afabffacf8c3cab4883c210385c865e61e275ba6fda4a3167180fc5a6b607150ff18797ee44737cd0d34507b52aeffffffff02f7dc69000000000017a91436b865d5b9664193ea1db43d159edf9edf9438028740420f000000000017a9147144796678ef9edc1a86745c2a01f8fb923ed6568700000000'
+        self.assertEqual(t.serialize().hex(), want)
+
+    def test_p2sh_p2wpkh(self):
+        secret = b'jimmy@programmingblockchain.com test1'
+        private_key = PrivateKey(little_endian_to_int(double_sha256(secret)))
+        point = private_key.point
+        real_h160 = hash160(point.sec())
+        redeem_script = p2wpkh_script(real_h160)
+        h160 = redeem_script.hash160()
+        prev_tx = bytes.fromhex('e6add1b775d9877e6d7e3d2ddd8464fecf88c37149044d2f9bc46297f2294a3d')
+        prev_index = 1
+        fee = int(100000000*0.001)
+        tx_in = TxIn(prev_tx, prev_index)
+        witness_program = decode_bech32('tb1q3845h8hm5uqgjh7jkq4pkrftlrcgvjf442jh4z')
+        h160 = witness_program[2:]
+        script_pubkey = p2wpkh_script(h160)
+        amount = tx_in.value(testnet=True) - fee
+        tx_out = TxOut(amount, script_pubkey)
+        t = Tx(1, [tx_in], [tx_out], 0, testnet=True)
+        t.sign_input_p2sh_p2wpkh(0, private_key)
+        want = '010000000001013d4a29f29762c49b2f4d044971c388cffe6484dd2d3d7e6d7e87d975b7d1ade6010000001716001489eb4b9efba700895fd2b02a1b0d2bf8f0864935ffffffff01a0bb0d000000000016001489eb4b9efba700895fd2b02a1b0d2bf8f0864935024830450221009af2dec92bc2101c84cf984e01561c9bdc2563091417c21f495605757831b90202203c203fd9edf0da344da46fca347e115089a525ba6a0a488b17f445fab3f7f29701210223136797cb0d7596cb5bd476102fe3aface2a06338e1afabffacf8c3cab4883c00000000'
+        self.assertEqual(t.serialize_segwit().hex(), want)
+
+    def test_p2wpkh(self):
+        secret = b'jimmy@programmingblockchain.com test1'
+        private_key = PrivateKey(little_endian_to_int(double_sha256(secret)))
+        point = private_key.point
+        h160 = hash160(point.sec())
+        prev_tx = bytes.fromhex('15298dc29fccc3ce2f96126a606daa29a8f68fc5906ed859d23dfb517549aa6e')
+        prev_index = 0
+        fee = int(100000000*0.001)
+        tx_in = TxIn(prev_tx, prev_index)
+        amount = tx_in.value(testnet=True) - fee
+        raw_witness = decode_bech32('tb1qevl98yey2nqnhnh5psn3h73zfl9yy5ae3ss4e79qungqa8y0eprsl8gle6')
+        h256 = raw_witness[2:]
+        script_pubkey = p2wsh_script(h256)
+        tx_out = TxOut(amount, script_pubkey)
+        t = Tx(1, [tx_in], [tx_out], 0, testnet=True)
+        t.sign_input_p2wpkh(0, private_key)
+        want = '010000000001016eaa497551fb3dd259d86e90c58ff6a829aa6d606a12962fcec3cc9fc28d29150000000000ffffffff0100350c0000000000220020cb3e53932454c13bcef40c271bfa224fca4253b98c215cf8a0e4d00e9c8fc847024730440220627d44b8eea048a45491c923647f397a7a15b412aa4d39d3a050a754bf3d1824022036cde64835589db899034b4a58757ec7fed7e120aa85ae40ff7eb625314e5d9f01210223136797cb0d7596cb5bd476102fe3aface2a06338e1afabffacf8c3cab4883c00000000'
+        print(t.serialize_segwit().hex(), want)
+
+    def test_p2wsh_multisig(self):
+        secrets = (b'jimmy@programmingblockchain.com test1', b'jimmy@programmingblockchain.com test2')
+        private_keys = [PrivateKey(little_endian_to_int(double_sha256(s))) for s in secrets]
+        points = [p.point for p in private_keys]
+        witness_script = multisig_redeem_script(2, points)
+        prev_tx = bytes.fromhex('6cfee84dd0b659bd826071824bbb2a38454922624d0fea21200cf18f83526c88')
+        prev_index = 0
+        fee = int(100000000*0.001)
+        tx_in = TxIn(prev_tx, prev_index)
+        amount = tx_in.value(testnet=True) - fee
+        h160 = decode_base58('2MuVPpBuS6evYsVeUJ85Z5Z6hokXGdtkYAw')
+        script_pubkey = p2sh_script(h160)
+        tx_out = TxOut(amount, script_pubkey)
+        t = Tx(1, [tx_in], [tx_out], 0, testnet=True)
+        t.sign_input_p2wsh_multisig(0, private_keys, witness_script)
+        want = '01000000000101886c52838ff10c2021ea0f4d62224945382abb4b82716082bd59b6d04de8fe6c0000000000ffffffff0160ae0a000000000017a914189e46fe6452ece52a362cf162fead10c5f244028704004830450221009099d2ff28dc7c7752a6026e5c054c58de7f5ce02e8e1c8b33b015fc12d7da3e022006f8560ea3b35f3e8d44e791f96312245c00c5bb50f95754f031c2bb3de18cc101483045022100b264087806a4d12f28f3f45e0c6acbea8c3a6cef3dfcca48e250bd1677008643022043583e9dab7215466ce2a361dd33ac51e9317c574e26ab134608cc08dd40e3fb014752210223136797cb0d7596cb5bd476102fe3aface2a06338e1afabffacf8c3cab4883c210385c865e61e275ba6fda4a3167180fc5a6b607150ff18797ee44737cd0d34507b52ae00000000'
+        self.assertEqual(t.serialize_segwit().hex(), want)
+
+    def test_p2sh_p2wsh_multisig(self):
+        secrets = (b'jimmy@programmingblockchain.com test1', b'jimmy@programmingblockchain.com test2')
+        private_keys = [PrivateKey(little_endian_to_int(double_sha256(s))) for s in secrets]
+        points = [p.point for p in private_keys]
+        witness_script = multisig_redeem_script(2, points)
+        h256 = witness_script.sha256()
+        redeem_script = p2wsh_script(h256)
+        prev_tx = bytes.fromhex('c93fb86b46aab846efba2d20ffae15c1993ca4231d5b5993a229ac54e5a4f8c1')
+        prev_index = 0
+        fee = int(100000000*0.001)
+        tx_in = TxIn(prev_tx, prev_index)
+        amount = tx_in.value(testnet=True) - fee
+        h160 = decode_base58('2MxEZNps15dAnGX5XaVwZWgoDvjvsDE5XSx')
+        script_pubkey = p2sh_script(h160)
+        tx_out = TxOut(amount, script_pubkey)
+        t = Tx(1, [tx_in], [tx_out], 0, testnet=True)
+        t.sign_input_p2sh_p2wsh_multisig(0, private_keys, witness_script)
+        want = '01000000000101c1f8a4e554ac29a293595b1d23a43c99c115aeff202dbaef46b8aa466bb83fc90000000023220020cb3e53932454c13bcef40c271bfa224fca4253b98c215cf8a0e4d00e9c8fc847ffffffff01c02709000000000017a91436b865d5b9664193ea1db43d159edf9edf94380287040047304402205581c0223cfc996e0db64e93b58862d059d9a8a35efd8311687f9eb2d42ff62502205f404afbcd05156a550b39048b151737a784bc4134598983294c5d013c56d44401483045022100f24f2e9967bec794ba52aca94b5c3c39ebd87932d38ecabd68dc51cc0e1c672d022047aaaaaf2cee39b280ebd371fa73797694ffae21e148a45b9c27cc526d0c97a9014752210223136797cb0d7596cb5bd476102fe3aface2a06338e1afabffacf8c3cab4883c210385c865e61e275ba6fda4a3167180fc5a6b607150ff18797ee44737cd0d34507b52ae00000000'
+        self.assertEqual(t.serialize_segwit().hex(), want)

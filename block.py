@@ -152,6 +152,7 @@ class BlockTest(TestCase):
         self.assertEqual(block.timestamp, 0x59a7771e)
         self.assertEqual(block.bits, bytes.fromhex('e93c0118'))
         self.assertEqual(block.nonce, bytes.fromhex('a4ffd71d'))
+        self.assertEqual(block.id(), '0000000000000000007e9e4c586439b0cdbe13b1370bdd9435d76a644d047523')
 
     def test_serialize(self):
         block_raw = bytes.fromhex('020000208ec39428b17323fa0ddec8e887b4a7c53b8c0a0a220cfd0000000000000000005b0750fce0a889502d40508d39576821155e9c9e3f5c3157f961db38fd8b25be1e77a759e93c0118a4ffd71d')
