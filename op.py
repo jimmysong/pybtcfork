@@ -12,6 +12,9 @@ def encode_num(num):
     while abs_num:
         result.append(abs_num & 0xff)
         abs_num >>= 8
+    # if the top bit is set,
+    # for negative numbers we ensure that the top bit is set by adding 0x80
+    # for positive numbers we ensure that the top bit is not set by adding 0x00
     if result[-1] & 0x80:
         if negative:
             result.append(0x80)
@@ -45,6 +48,11 @@ def decode_num(element):
 
 def op_0(stack):
     stack.append(encode_num(0))
+    return True
+
+
+def op_1negate(stack):
+    stack.append(encode_num(-1))
     return True
 
 
@@ -213,10 +221,77 @@ def op_verify(stack):
     return True
 
 
+def op_return(stack):
+    return False
+
+
+def op_toaltstack(stack, altstack):
+    if len(stack) < 1:
+        return False
+    altstack.append(stack.pop())
+    return True
+
+
+def op_fromaltstack(stack, altstack):
+    if len(altstack) < 1:
+        return False
+    stack.append(altstack.pop())
+    return True
+
+
+def op_2drop(stack):
+    if len(stack) < 2:
+        return False
+    stack.pop()
+    stack.pop()
+    return True
+
+
 def op_2dup(stack):
     if len(stack) < 2:
         return False
     stack.extend(stack[-2:])
+    return True
+
+
+def op_3dup(stack):
+    if len(stack) < 3:
+        return False
+    stack.extend(stack[-3:])
+    return True
+
+
+def op_2over(stack):
+    if len(stack) < 4:
+        return False
+    stack.extend(stack[-4:-2])
+    return True
+
+
+def op_2rot(stack):
+    if len(stack) < 6:
+        return False
+    stack.extend(stack[-6:-4])
+    return True
+
+
+def op_2swap(stack):
+    if len(stack) < 4:
+        return False
+    stack[-4:] = stack[-2:] + stack[-4:-2]
+    return True
+
+
+def op_ifdup(stack):
+    if len(stack) < 1:
+        return False
+    if decode_num(stack[-1]) != 0:
+        stack.append(stack[-1])
+    return True
+
+
+def op_depth(stack):
+    stack.append(encode_num(len(stack)))
     return True
 
 
@@ -234,13 +309,60 @@ def op_dup(stack):
     return True
 
 
+def op_nip(stack):
+    if len(stack) < 2:
+        return False
+    stack[-2:] = stack[-1:]
+    return True
+
+
+def op_over(stack):
+    if len(stack) < 2:
+        return False
+    stack.append(stack[-2])
+    return True
+
+
+def op_pick(stack):
+    if len(stack) < 1:
+        return False
+    n = decode_num(stack.pop())
+    if len(stack) < n + 1:
+        return False
+    stack.append(stack[-n - 1])
+    return True
+
+
+def op_roll(stack):
+    if len(stack) < 1:
+        return False
+    n = decode_num(stack.pop())
+    if len(stack) < n + 1:
+        return False
+    if n == 0:
+        return True
+    stack.append(stack.pop(-n - 1))
+    return True
+
+
+def op_rot(stack):
+    if len(stack) < 3:
+        return False
+    stack.append(stack.pop(-3))
+    return True
+
+
 def op_swap(stack):
     if len(stack) < 2:
         return False
-    element1 = stack.pop()
-    element2 = stack.pop()
-    stack.append(element1)
-    stack.append(element2)
+    stack.append(stack.pop(-2))
+    return True
+
+
+def op_tuck(stack):
+    if len(stack) < 2:
+        return False
+    stack.insert(-2, stack[-1])
     return True
 
 
@@ -267,6 +389,41 @@ def op_equalverify(stack):
     return op_equal(stack) and op_verify(stack)
 
 
+def op_1add(stack):
+    if len(stack) < 1:
+        return False
+    element = decode_num(stack.pop())
+    stack.append(encode_num(element + 1))
+    return True
+
+
+def op_1sub(stack):
+    if len(stack) < 1:
+        return False
+    element = decode_num(stack.pop())
+    stack.append(encode_num(element - 1))
+    return True
+
+
+def op_negate(stack):
+    if len(stack) < 1:
+        return False
+    element = decode_num(stack.pop())
+    stack.append(encode_num(-element))
+    return True
+
+
+def op_abs(stack):
+    if len(stack) < 1:
+        return False
+    element = decode_num(stack.pop())
+    if element < 0:
+        stack.append(encode_num(-element))
+    else:
+        stack.append(encode_num(element))
+    return True
+
+
 def op_not(stack):
     if len(stack) < 1:
         return False
@@ -275,6 +432,17 @@ def op_not(stack):
         stack.append(encode_num(1))
     else:
         stack.append(encode_num(0))
+    return True
+
+
+def op_0notequal(stack):
+    if len(stack) < 1:
+        return False
+    element = stack.pop()
+    if decode_num(element) == 0:
+        stack.append(encode_num(0))
+    else:
+        stack.append(encode_num(1))
     return True
 
 
@@ -292,7 +460,144 @@ def op_sub(stack):
         return False
     element1 = decode_num(stack.pop())
     element2 = decode_num(stack.pop())
-    stack.append(encode_num(element1 - element2))
+    stack.append(encode_num(element2 - element1))
+    return True
+
+
+def op_booland(stack):
+    if len(stack) < 2:
+        return False
+    element1 = decode_num(stack.pop())
+    element2 = decode_num(stack.pop())
+    if element1 and element2:
+        stack.append(encode_num(1))
+    else:
+        stack.append(encode_num(0))
+    return True
+
+
+def op_boolor(stack):
+    if len(stack) < 2:
+        return False
+    element1 = decode_num(stack.pop())
+    element2 = decode_num(stack.pop())
+    if element1 or element2:
+        stack.append(encode_num(1))
+    else:
+        stack.append(encode_num(0))
+    return True
+
+
+def op_numequal(stack):
+    if len(stack) < 2:
+        return False
+    element1 = decode_num(stack.pop())
+    element2 = decode_num(stack.pop())
+    if element1 == element2:
+        stack.append(encode_num(1))
+    else:
+        stack.append(encode_num(0))
+    return True
+
+
+def op_numequalverify(stack):
+    return op_numequal(stack) and op_verify(stack)
+
+
+def op_numnotequal(stack):
+    if len(stack) < 2:
+        return False
+    element1 = decode_num(stack.pop())
+    element2 = decode_num(stack.pop())
+    if element1 == element2:
+        stack.append(encode_num(0))
+    else:
+        stack.append(encode_num(1))
+    return True
+
+
+def op_lessthan(stack):
+    if len(stack) < 2:
+        return False
+    element1 = decode_num(stack.pop())
+    element2 = decode_num(stack.pop())
+    if element2 < element1:
+        stack.append(encode_num(1))
+    else:
+        stack.append(encode_num(0))
+    return True
+
+
+def op_greaterthan(stack):
+    if len(stack) < 2:
+        return False
+    element1 = decode_num(stack.pop())
+    element2 = decode_num(stack.pop())
+    if element2 > element1:
+        stack.append(encode_num(1))
+    else:
+        stack.append(encode_num(0))
+    return True
+
+
+def op_lessthanorequal(stack):
+    if len(stack) < 2:
+        return False
+    element1 = decode_num(stack.pop())
+    element2 = decode_num(stack.pop())
+    if element2 <= element1:
+        stack.append(encode_num(1))
+    else:
+        stack.append(encode_num(0))
+    return True
+
+
+def op_greaterthanorequal(stack):
+    if len(stack) < 2:
+        return False
+    element1 = decode_num(stack.pop())
+    element2 = decode_num(stack.pop())
+    if element2 >= element1:
+        stack.append(encode_num(1))
+    else:
+        stack.append(encode_num(0))
+    return True
+
+
+def op_min(stack):
+    if len(stack) < 2:
+        return False
+    element1 = decode_num(stack.pop())
+    element2 = decode_num(stack.pop())
+    if element1 < element2:
+        stack.append(encode_num(element1))
+    else:
+        stack.append(encode_num(element2))
+    return True
+
+
+def op_max(stack):
+    if len(stack) < 2:
+        return False
+    element1 = decode_num(stack.pop())
+    element2 = decode_num(stack.pop())
+    if element1 > element2:
+        stack.append(encode_num(element1))
+    else:
+        stack.append(encode_num(element2))
+    return True
+
+
+def op_within(stack):
+    if len(stack) < 3:
+        return False
+    maximum = decode_num(stack.pop())
+    minimum = decode_num(stack.pop())
+    element = decode_num(stack.pop())
+    if element >= minimum and element < maximum:
+        stack.append(encode_num(1))
+    else:
+        stack.append(encode_num(0))
     return True
 
 
@@ -442,6 +747,7 @@ def op_checksequenceverify(stack, version, sequence):
 
 OP_CODE_FUNCTIONS = {
     0: op_0,
+    79: op_1negate,
     81: op_1,
     82: op_2,
     83: op_3,
@@ -464,69 +770,52 @@ OP_CODE_FUNCTIONS = {
     100: op_notif,
     #    101: op_verif,
     #    102: op_vernotif,
-    #    103: op_else,
-    #    104: op_endif,
     105: op_verify,
-    #    106: op_return,
-    #    107: op_toaltstack,
-    #    108: op_fromaltstack,
-    #    109: op_2drop,
+    106: op_return,
+    107: op_toaltstack,
+    108: op_fromaltstack,
+    109: op_2drop,
     110: op_2dup,
-    #    111: op_3dup,
-    #    112: op_2over,
-    #    113: op_2rot,
-    #    114: op_2swap,
-    #    115: op_ifdup,
-    #    116: op_depth,
+    111: op_3dup,
+    112: op_2over,
+    113: op_2rot,
+    114: op_2swap,
+    115: op_ifdup,
+    116: op_depth,
     117: op_drop,
     118: op_dup,
-    #    119: op_nip,
-    #    120: op_over,
-    #    121: op_pick,
-    #    122: op_roll,
-    #    123: op_rot,
+    119: op_nip,
+    120: op_over,
+    121: op_pick,
+    122: op_roll,
+    123: op_rot,
     124: op_swap,
-    #    125: op_tuck,
-    #    126: op_cat,
-    #    127: op_substr,
-    #    128: op_left,
-    #    129: op_right,
+    125: op_tuck,
     130: op_size,
-    #    131: op_invert,
-    #    132: op_and,
-    #    133: op_or,
-    #    134: op_xor,
     135: op_equal,
     136: op_equalverify,
     #    137: op_reserved1,
     #    138: op_reserved2,
-    #    139: op_1add,
-    #    140: op_1sub,
-    #    141: op_2mul,
-    #    142: op_2div,
-    #    143: op_negate,
-    #    144: op_abs,
+    139: op_1add,
+    140: op_1sub,
+    143: op_negate,
+    144: op_abs,
     145: op_not,
-    #    146: op_0notequal,
+    146: op_0notequal,
     147: op_add,
     148: op_sub,
-    #    149: op_mul,
-    #    150: op_div,
-    #    151: op_mod,
-    #    152: op_lshift,
-    #    153: op_rshift,
-    #    154: op_booland,
-    #    155: op_boolor,
-    #    156: op_numequal,
-    #    157: op_numequalverify,
-    #    158: op_numnotequal,
-    #    159: op_lessthan,
-    #    160: op_greaterthan,
-    #    161: op_lessthanorequal,
-    #    162: op_greaterthanorequal,
-    #    163: op_min,
-    #    164: op_max,
-    #    165: op_within,
+    154: op_booland,
+    155: op_boolor,
+    156: op_numequal,
+    157: op_numequalverify,
+    158: op_numnotequal,
+    159: op_lessthan,
+    160: op_greaterthan,
+    161: op_lessthanorequal,
+    162: op_greaterthanorequal,
+    163: op_min,
+    164: op_max,
+    165: op_within,
     166: op_ripemd160,
     167: op_sha1,
     168: op_sha256,
@@ -537,16 +826,16 @@ OP_CODE_FUNCTIONS = {
     173: op_checksigverify,
     174: op_checkmultisig,
     175: op_checkmultisigverify,
-    #    176: op_nop1,
+    176: op_nop,
     177: op_checklocktimeverify,
     178: op_checksequenceverify,
-    #    179: op_nop4,
-    #    180: op_nop5,
-    #    181: op_nop6,
-    #    182: op_nop7,
-    #    183: op_nop8,
-    #    184: op_nop9,
-    #    185: op_nop10,
+    179: op_nop,
+    180: op_nop,
+    181: op_nop,
+    182: op_nop,
+    183: op_nop,
+    184: op_nop,
+    185: op_nop,
     #    252: op_nulldata,
     #    253: op_pubkeyhash,
     #    254: op_pubkey,
@@ -605,34 +894,19 @@ OP_CODE_NAMES = {
     123: 'OP_ROT',
     124: 'OP_SWAP',
     125: 'OP_TUCK',
-    126: 'OP_CAT',
-    127: 'OP_SUBSTR',
-    128: 'OP_LEFT',
-    129: 'OP_RIGHT',
     130: 'OP_SIZE',
-    131: 'OP_INVERT',
-    132: 'OP_AND',
-    133: 'OP_OR',
-    134: 'OP_XOR',
     135: 'OP_EQUAL',
     136: 'OP_EQUALVERIFY',
     137: 'OP_RESERVED1',
     138: 'OP_RESERVED2',
     139: 'OP_1ADD',
     140: 'OP_1SUB',
-    141: 'OP_2MUL',
-    142: 'OP_2DIV',
     143: 'OP_NEGATE',
     144: 'OP_ABS',
     145: 'OP_NOT',
     146: 'OP_0NOTEQUAL',
     147: 'OP_ADD',
     148: 'OP_SUB',
-    149: 'OP_MUL',
-    150: 'OP_DIV',
-    151: 'OP_MOD',
-    152: 'OP_LSHIFT',
-    153: 'OP_RSHIFT',
     154: 'OP_BOOLAND',
     155: 'OP_BOOLOR',
     156: 'OP_NUMEQUAL',

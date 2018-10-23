@@ -21,7 +21,7 @@ from op import (
 )
 
 
-DEBUG = True
+DEBUG = False
 
 
 def p2pkh_script(h160):
@@ -58,8 +58,16 @@ def p2wsh_script(h256):
     return Script([0x00, h256])
 
 
-def print_state(items, item, stack):
-    print('-' * 80)
+def print_state(items, item, stack, altstack):
+    print('-' * 78)
+    print_altstack = len(altstack) > 0
+    if print_altstack:
+        column_width = 18
+        in_between = 2
+    else:
+        column_width = 24
+        in_between = 3
+    format_str = '{0: <' + str(column_width) + '}'
     total_height = max(len(items), 1, len(stack))
     for i in range(total_height):
         to_print = ''
@@ -68,49 +76,76 @@ def print_state(items, item, stack):
             if type(current) == int:
                 current = OP_CODE_NAMES[current]
             else:
-                current = current.hex()[:24]
-            to_print += '{0: <24}'.format(current)
+                current = current.hex()[:column_width]
+            to_print += format_str.format(current)
         else:
-            to_print += ' ' * 24
-        to_print += '    '
+            to_print += ' ' * column_width
+        to_print += ' ' * in_between
         if i == total_height - 1:
             current = item
             if type(current) == int:
                 current = OP_CODE_NAMES[current]
             else:
-                current = current.hex()[:24]
-            to_print += '{0: <24}'.format(current)
+                current = current.hex()[:column_width]
+            to_print += format_str.format(current)
         else:
-            to_print += ' ' * 24
-        to_print += '    '
+            to_print += ' ' * column_width
+        to_print += ' ' * in_between
         if len(stack) >= total_height - i:
             current = stack[total_height - i - 1]
             if len(current) == 0:
                 current = '0'
             else:
-                current = current.hex()[:24]
-            to_print += '{0: <24}'.format(current)
+                current = current.hex()[:column_width]
+            to_print += format_str.format(current)
+        if print_altstack:
+            to_print += ' ' * in_between
+            if len(stack) >= total_height - i:
+                current = stack[total_height - i - 1]
+                if len(current) == 0:
+                    current = '0'
+                else:
+                    current = current.hex()[:column_width]
+                to_print += format_str.format(current)
         print(to_print)
+
+
+WEIRD_SET = {98, 101, 102, 107, 108, 109, 111, 112, 113, 114, 115, 116, 119, 120, 121, 122, 123, 125, 139, 140, 143, 144, 146, 147, 148, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 168, 170, 171}
 
 
 class Script:
 
-    def __init__(self, items):
+    def has_weird_op_code(self):
+        for item in self.items:
+            if item in WEIRD_SET:
+                return True
+        return False
+
+    def __init__(self, items, coinbase=None):
         self.items = items
+        self.coinbase = coinbase
 
     def __repr__(self):
         result = ''
+        if self.coinbase:
+            return self.coinbase.hex()
         for item in self.items:
             if type(item) == int:
-                result += '{} '.format(OP_CODE_NAMES[item])
+                if OP_CODE_NAMES.get(item):
+                    name = OP_CODE_NAMES.get(item)
+                else:
+                    name = 'OP_[{}]'.format(item)
+                result += '{} '.format(name)
             else:
                 result += '{} '.format(item.hex())
         return result
 
     @classmethod
-    def parse(cls, s):
+    def parse(cls, s, coinbase_mode=False):
         # get the length of the entire field
         length = read_varint(s)
+        if coinbase_mode:
+            return cls([], coinbase=s.read(length))
         # initialize the items array
         items = []
         # initialize the number of bytes we've read to 0
@@ -151,9 +186,13 @@ class Script:
                 op_code = current_byte
                 # add the op_code to the list of items
                 items.append(op_code)
+        if count != length:
+            raise RuntimeError('parsing script failed')
         return cls(items)
 
     def raw_serialize(self):
+        if self.coinbase:
+            return self.coinbase
         # initialize what we'll send back
         result = b''
         # go through each item
@@ -206,21 +245,32 @@ class Script:
     def __add__(self, other):
         return Script(self.items + other.items)
 
-    def evaluate(self, z, version, locktime, sequence, witness):
+    def evaluate(self, z, version, locktime, sequence, witness, bip65=True, bip112=True):
         # create a copy as we may need to add to this list if we have a
         # RedeemScript
         items = self.items[:]
         stack = []
+        altstack = []
         if DEBUG:
-            print_state(items, b'', stack)
+            print_state(items, b'', stack, altstack)
         while len(items) > 0:
             item = items.pop(0)
             if DEBUG:
-                print_state(items, item, stack)
+                print_state(items, item, stack, altstack)
             if type(item) == int:
                 # do what the op code says
                 operation = OP_CODE_FUNCTIONS[item]
-                if item in (172, 173, 174, 175):
+                if item in (99, 100):
+                    # op_if/op_notif require the items array
+                    if not operation(stack, items):
+                        print('bad op: {}'.format(OP_CODE_NAMES[item]))
+                        return False
+                elif item in (107, 108):
+                    # op_toaltstack/op_fromaltstack require the altstack
+                    if not operation(stack, altstack):
+                        print('bad op: {}'.format(OP_CODE_NAMES[item]))
+                        return False
+                elif item in (172, 173, 174, 175):
                     # these are signing operations, they need a sig_hash
                     # to check against
                     if not operation(stack, z):
@@ -228,18 +278,13 @@ class Script:
                         return False
                 elif item == 177:
                     # op_checklocktimeverify requires locktime and sequence
-                    if not operation(stack, locktime, sequence):
+                    if bip65 and not operation(stack, locktime, sequence):
                         print('bad cltv')
                         return False
                 elif item == 178:
                     # op_checksequenceverify requires version and sequence
-                    if not operation(stack, version, sequence):
+                    if bip112 and not operation(stack, version, sequence):
                         print('bad csv')
-                        return False
-                elif item in (99, 100):
-                    # op_if/op_notif require the items array
-                    if not operation(stack, items):
-                        print('bad op: {}'.format(OP_CODE_NAMES[item]))
                         return False
                 else:
                     if not operation(stack):
@@ -293,7 +338,7 @@ class Script:
                     witness_script_items = Script.parse(stream).items
                     items.extend(witness_script_items)
                     if DEBUG:
-                        print_state(items, b'', stack)
+                        print_state(items, b'', stack, altstack)
         if len(stack) == 0:
             print('empty stack')
             return False
@@ -406,3 +451,8 @@ class ScriptTest(TestCase):
         self.assertEqual(script_pubkey.address(testnet=False), want)
         want = '2N3u1R6uwQfuobCqbCgBkpsgBxvr1tZpe7B'
         self.assertEqual(script_pubkey.address(testnet=True), want)
+
+    def test_coinbase_script_sig(self):
+        raw_script = bytes.fromhex('4d04ffff001d0104455468652054696d65732030332f4a616e2f32303039204368616e63656c6c6f72206f6e206272696e6b206f66207365636f6e64206261696c6f757420666f722062616e6b73')
+        s = Script.parse(BytesIO(raw_script))
+        self.assertTrue(s.items[2].find(b'The Times 03/Jan/2009') != -1)

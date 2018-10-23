@@ -28,8 +28,8 @@ class TxFetcher:
             return 'http://btc.programmingblockchain.com:8332'
 
     @classmethod
-    def fetch(cls, tx_id, testnet=False):
-        if tx_id not in cls.cache:
+    def fetch(cls, tx_id, testnet=False, fresh=False):
+        if fresh or (tx_id not in cls.cache):
             url = '{}/rest/tx/{}.hex'.format(cls.get_url(testnet), tx_id)
             response = requests.get(url)
             try:
@@ -37,21 +37,18 @@ class TxFetcher:
             except ValueError:
                 raise RuntimeError(response.text)
             # make sure the tx we got matches to the hash we requested
-            tx = Tx.parse(BytesIO(raw), testnet=testnet)
-            if tx.id() != tx_id:
-                raise RuntimeError('server lied: {} vs {}'.format(tx.id(), tx_id))
-            cls.cache[tx_id] = tx
+            computed = double_sha256(raw)[::-1].hex()
+            if computed != tx_id:
+                raise RuntimeError('server lied: {} vs {}'.format(computed, tx_id))
+            cls.cache[tx_id] = Tx.parse(BytesIO(raw), testnet=testnet)
+        cls.cache[tx_id].testnet = testnet
         return cls.cache[tx_id]
 
     @classmethod
     def load_cache(cls, filename):
         disk_cache = json.loads(open(filename, 'r').read())
         for k, raw_hex in disk_cache.items():
-            # make sure the tx hash and contents match
-            tx = Tx.parse(BytesIO(bytes.fromhex(raw_hex)))
-            if tx.id() != k:
-                raise RuntimeError('bad cache: {} vs {}'.format(tx.id(), k))
-            cls.cache[k] = tx
+            cls.cache[k] = Tx.parse(BytesIO(bytes.fromhex(raw_hex)))
 
     @classmethod
     def dump_cache(cls, filename):
@@ -73,6 +70,8 @@ class Tx:
         self._hash_prevouts = None
         self._hash_sequence = None
         self._hash_outputs = None
+        self.bip65 = True
+        self.bip112 = True
 
     def __repr__(self):
         tx_ins = ''
@@ -108,7 +107,7 @@ class Tx:
         else:
             parse_method = cls.parse_legacy
         # reset the seek to the beginning so everything can go through
-        s.seek(0)
+        s.seek(-5, 1)
         return parse_method(s, testnet=testnet)
 
     @classmethod
@@ -363,12 +362,16 @@ class Tx:
         # combine the current script_sig and the previous script_pubkey
         script = tx_in.script_sig + script_pubkey
         # now evaluate this script and see if it passes
-        return script.evaluate(z, self.version, self.locktime, tx_in.sequence, witness)
+        return script.evaluate(
+            z, self.version, self.locktime, tx_in.sequence, witness,
+            bip65=self.bip65, bip112=self.bip112,
+        )
 
     def verify(self):
         '''Verify every input of this transaction'''
         for i in range(len(self.tx_ins)):
             if not self.verify_input(i):
+                print('failed at input {}'.format(i))
                 return False
         return True
 
@@ -511,12 +514,14 @@ class Tx:
         # if this is NOT a coinbase transaction, return None
         if not self.is_coinbase():
             return None
-        # grab the first input
-        first_input = self.tx_ins[0]
-        # grab the first element of the script_sig (.script_sig.items[0])
-        first_element = first_input.script_sig.items[0]
+        # grab the first input's script_sig
+        script_sig = self.tx_ins[0].script_sig
+        # get the first byte of the scriptsig, which is the length
+        length = script_sig.coinbase[0]
+        # get the next length bytes
+        item = script_sig.coinbase[1:1 + length]
         # convert the first element from little endian to int
-        return little_endian_to_int(first_element)
+        return little_endian_to_int(item)
 
 
 class TxIn:
@@ -548,7 +553,8 @@ class TxIn:
         prev_index = little_endian_to_int(s.read(4))
         # script_sig is a variable field (length followed by the data)
         # you can use Script.parse to get the actual script
-        script_sig = Script.parse(s)
+        coinbase_mode = prev_tx == b'\x00' * 32 and prev_index == 0xffffffff
+        script_sig = Script.parse(s, coinbase_mode)
         # sequence is 4 bytes, little-endian, interpret as int
         sequence = little_endian_to_int(s.read(4))
         # return an instance of the class (cls(...))
@@ -665,6 +671,11 @@ class TxTest(TestCase):
         tx = TxFetcher.fetch('452c629d67e41baec3ac6f04fe744b4b9617f8f859c63b3002f8684e7a4fee03')
         self.assertEqual(tx.locktime, 410393)
 
+    def test_parse(self):
+        raw_tx = '01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff2b69d614f5f69bab704552e66eeaf720d07294ebe80ba37181a5df8c7fdaecac910878060b0a85543de9b224ffffffff0100f2052a01000000232102f3cedb3c71052860e6329e4fd7b1ad51220a21111f2bf4fec3691e6f52664a75ac00000000'
+        tx = Tx.parse(BytesIO(bytes.fromhex(raw_tx)))
+        self.assertEqual(tx.version, 1)
+
     def test_serialize(self):
         raw_tx = '0100000001813f79011acb80925dfe69b3def355fe914bd1d96a3f5f71bf8303c6a989c7d1000000006b483045022100ed81ff192e75a3fd2304004dcadb746fa5e24c5031ccfcf21320b0277457c98f02207a986d955c6e0cb35d446a89d3f56100f4d7f67801c31967743a9c8e10615bed01210349fc4e631e3624a545de3f89f5d8684c7b8138bd94bdd531d2e213bf016b278afeffffff02a135ef01000000001976a914bc3b654dca7e56b04dca18f2566cdaf02e8d9ada88ac99c39800000000001976a9141c4bc762dd5423e332166702cb75f40df79fea1288ac19430600'
         tx = TxFetcher.fetch('452c629d67e41baec3ac6f04fe744b4b9617f8f859c63b3002f8684e7a4fee03')
@@ -762,6 +773,22 @@ class TxTest(TestCase):
     def test_verify_sha1_pinata(self):
         tx = TxFetcher.fetch('8d31992805518fd62daa3bdd2a5c4fd2cd3054c9b3dca1d78055e9528cff6adc')
         self.assertTrue(tx.verify())
+
+    def test_verify_weird(self):
+        tx_ids = (
+            'efdf1b981d7bba9c941295c0dfc654c4b5e40d7b9744819dd4f78b8e149898e1',
+            '9aa3a5a6d9b7d1ac9555be8e42596d06686cc5f76d259b06c560a207d310d5f5',
+            'c5d4b73af6eed28798473b05d2b227edd4f285069629843e899b52c2d1c165b7',
+            '74ea059a63c7ebddaee6805e1560b15c937d99a9ee9745412cbc6d2a0a5f5305',
+            'e335562f7e297aadeed88e5954bc4eeb8dc00b31d829eedb232e39d672b0c009',
+            'dc3aad51b4b9ea1ef40755a38b0b4d6e08c72d2ac5e95b8bebe9bd319b6aed7e',
+        )
+        for tx_id in tx_ids:
+            tx = TxFetcher.fetch(tx_id, testnet=True, fresh=True)
+            tx.bip112 = False
+            tx.bip65 = False
+            print(tx_id)
+            self.assertTrue(tx.verify())
 
     def test_sign_input_p2pkh(self):
         private_key = PrivateKey(secret=8675309)
