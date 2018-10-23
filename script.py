@@ -1,7 +1,10 @@
 from io import BytesIO
 from unittest import TestCase
 
+from ecc import PrivateKey
+
 from helper import (
+    double_sha256,
     encode_bech32_checksum,
     encode_varint,
     h160_to_p2pkh_address,
@@ -452,6 +455,62 @@ class ScriptTest(TestCase):
         want = '2N3u1R6uwQfuobCqbCgBkpsgBxvr1tZpe7B'
         self.assertEqual(script_pubkey.address(testnet=True), want)
 
+    def test_address_p2sh_multisig(self):
+        secrets = (b'jimmy@programmingblockchain.com test1', b'jimmy@programmingblockchain.com test2')
+        private_keys = [PrivateKey(little_endian_to_int(double_sha256(s))) for s in secrets]
+        points = [p.point for p in private_keys]
+        redeem_script = multisig_redeem_script(2, points)
+        h160 = redeem_script.hash160()
+        script_pubkey = p2sh_script(h160)
+        self.assertEqual(script_pubkey.address(testnet=True), '2MxEZNps15dAnGX5XaVwZWgoDvjvsDE5XSx')
+
+    def test_address_p2sh_p2wpkh(self):
+        secret = b'jimmy@programmingblockchain.com test1'
+        private_key = PrivateKey(little_endian_to_int(double_sha256(secret)))
+        point = private_key.point
+        real_h160 = hash160(point.sec())
+        redeem_script = p2wpkh_script(real_h160)
+        h160 = redeem_script.hash160()
+        self.assertEqual(p2sh_script(h160).address(testnet=True), '2N3a8NdfeA7SAurCGsd5k9AEYvbszipz3Jz')
+
+    def test_address_p2wpkh(self):
+        secret = b'jimmy@programmingblockchain.com test1'
+        private_key = PrivateKey(little_endian_to_int(double_sha256(secret)))
+        point = private_key.point
+        h160 = hash160(point.sec())
+        script_pubkey = p2wpkh_script(h160)
+        self.assertEqual(script_pubkey.address(testnet=True), 'tb1q3845h8hm5uqgjh7jkq4pkrftlrcgvjf442jh4z')
+
+    def test_address_p2wsh(self):
+        secrets = (b'jimmy@programmingblockchain.com test1', b'jimmy@programmingblockchain.com test2')
+        private_keys = [PrivateKey(little_endian_to_int(double_sha256(s))) for s in secrets]
+        points = [p.point for p in private_keys]
+        witness_script = multisig_redeem_script(2, points)
+        h256 = witness_script.sha256()
+        script_pubkey = p2wsh_script(h256)
+        addr = script_pubkey.address(testnet=True) 
+        self.assertEqual(addr, 'tb1qevl98yey2nqnhnh5psn3h73zfl9yy5ae3ss4e79qungqa8y0eprsl8gle6')
+
+    def test_address_p2sh_p2wsh(self):
+        secrets = (b'jimmy@programmingblockchain.com test1', b'jimmy@programmingblockchain.com test2')
+        private_keys = [PrivateKey(little_endian_to_int(double_sha256(s))) for s in secrets]
+        points = [p.point for p in private_keys]
+        witness_script = multisig_redeem_script(2, points)
+        h256 = witness_script.sha256()
+        redeem_script = p2wsh_script(h256)
+        h160 = redeem_script.hash160()
+        script_pubkey = p2sh_script(h160)
+        self.assertEqual(script_pubkey.address(testnet=True), '2MuVPpBuS6evYsVeUJ85Z5Z6hokXGdtkYAw')
+
+    def test_address_2(self):
+        secrets = (b'jimmy@programmingblockchain.com test1', b'jimmy@programmingblockchain.com test2')
+        private_keys = [PrivateKey(little_endian_to_int(double_sha256(s))) for s in secrets]
+        points = [p.point for p in private_keys]
+        redeem_script = multisig_redeem_script(2, points)
+        h160 = redeem_script.hash160()
+        script_pubkey = p2sh_script(h160)
+        self.assertEqual(script_pubkey.address(testnet=True), '2MxEZNps15dAnGX5XaVwZWgoDvjvsDE5XSx')
+        
     def test_coinbase_script_sig(self):
         raw_script = bytes.fromhex('4d04ffff001d0104455468652054696d65732030332f4a616e2f32303039204368616e63656c6c6f72206f6e206272696e6b206f66207365636f6e64206261696c6f757420666f722062616e6b73')
         s = Script.parse(BytesIO(raw_script))
