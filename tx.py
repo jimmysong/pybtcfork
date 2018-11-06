@@ -8,7 +8,7 @@ from ecc import PrivateKey
 from helper import (
     decode_base58,
     decode_bech32,
-    double_sha256,
+    hash256,
     encode_varint,
     hash160,
     int_to_little_endian,
@@ -50,7 +50,7 @@ class TxFetcher:
             if tx.segwit:
                 computed = tx.id()
             else:
-                computed = double_sha256(raw)[::-1].hex()
+                computed = hash256(raw)[::-1].hex()
             if computed != tx_id:
                 raise RuntimeError('server lied: {} vs {}'.format(computed, tx_id))
             cls.cache[tx_id] = tx
@@ -107,7 +107,7 @@ class Tx:
 
     def hash(self):
         '''Binary hash of the legacy serialization'''
-        return double_sha256(self.serialize_legacy())[::-1]
+        return hash256(self.serialize_legacy())[::-1]
 
     @classmethod
     def parse(cls, s, testnet=False):
@@ -285,8 +285,8 @@ class Tx:
             locktime=self.locktime)
         # add the hash_type int 4 bytes, little endian
         result = alt_tx.serialize() + int_to_little_endian(SIGHASH_ALL, 4)
-        # get the double_sha256 of the tx serialization
-        s256 = double_sha256(result)
+        # get the hash256 of the tx serialization
+        s256 = hash256(result)
         # convert this to a big-endian integer using int.from_bytes(x, 'big')
         return int.from_bytes(s256, 'big')
 
@@ -297,8 +297,8 @@ class Tx:
             for tx_in in self.tx_ins:
                 all_prevouts += tx_in.prev_tx[::-1] + int_to_little_endian(tx_in.prev_index, 4)
                 all_sequence += int_to_little_endian(tx_in.sequence, 4)
-            self._hash_prevouts = double_sha256(all_prevouts)
-            self._hash_sequence = double_sha256(all_sequence)
+            self._hash_prevouts = hash256(all_prevouts)
+            self._hash_sequence = hash256(all_sequence)
         return self._hash_prevouts
 
     def hash_sequence(self):
@@ -311,7 +311,7 @@ class Tx:
             all_outputs = b''
             for tx_out in self.tx_outs:
                 all_outputs += tx_out.serialize()
-            self._hash_outputs = double_sha256(all_outputs)
+            self._hash_outputs = hash256(all_outputs)
         return self._hash_outputs
 
     def sig_hash_bip143(self, input_index, redeem_script=None, witness_script=None):
@@ -334,7 +334,7 @@ class Tx:
         s += self.hash_outputs()
         s += int_to_little_endian(self.locktime, 4)
         s += int_to_little_endian(SIGHASH_ALL, 4)
-        return int.from_bytes(double_sha256(s), 'big')
+        return int.from_bytes(hash256(s), 'big')
 
     def verify_input(self, input_index):
         '''Returns whether the input has a valid signature'''
@@ -828,7 +828,7 @@ class TxTest(TestCase):
 
     def test_p2sh_multisig(self):
         secrets = (b'jimmy@programmingblockchain.com test1', b'jimmy@programmingblockchain.com test2')
-        private_keys = [PrivateKey(little_endian_to_int(double_sha256(s))) for s in secrets]
+        private_keys = [PrivateKey(little_endian_to_int(hash256(s))) for s in secrets]
         points = [p.point for p in private_keys]
         redeem_script = multisig_redeem_script(2, points)
         prev_tx = bytes.fromhex('770e48abf1051fe8df7d906d6a6589a3a6fe4da09edd5e4172ee04db3e88dfb8')
@@ -849,7 +849,7 @@ class TxTest(TestCase):
 
     def test_p2sh_p2wpkh(self):
         secret = b'jimmy@programmingblockchain.com test1'
-        private_key = PrivateKey(little_endian_to_int(double_sha256(secret)))
+        private_key = PrivateKey(little_endian_to_int(hash256(secret)))
         point = private_key.point
         real_h160 = hash160(point.sec())
         redeem_script = p2wpkh_script(real_h160)
@@ -870,7 +870,7 @@ class TxTest(TestCase):
 
     def test_p2wpkh(self):
         secret = b'jimmy@programmingblockchain.com test1'
-        private_key = PrivateKey(little_endian_to_int(double_sha256(secret)))
+        private_key = PrivateKey(little_endian_to_int(hash256(secret)))
         point = private_key.point
         h160 = hash160(point.sec())
         prev_tx = bytes.fromhex('15298dc29fccc3ce2f96126a606daa29a8f68fc5906ed859d23dfb517549aa6e')
@@ -889,7 +889,7 @@ class TxTest(TestCase):
 
     def test_p2wsh_multisig(self):
         secrets = (b'jimmy@programmingblockchain.com test1', b'jimmy@programmingblockchain.com test2')
-        private_keys = [PrivateKey(little_endian_to_int(double_sha256(s))) for s in secrets]
+        private_keys = [PrivateKey(little_endian_to_int(hash256(s))) for s in secrets]
         points = [p.point for p in private_keys]
         witness_script = multisig_redeem_script(2, points)
         prev_tx = bytes.fromhex('6cfee84dd0b659bd826071824bbb2a38454922624d0fea21200cf18f83526c88')
@@ -907,7 +907,7 @@ class TxTest(TestCase):
 
     def test_p2sh_p2wsh_multisig(self):
         secrets = (b'jimmy@programmingblockchain.com test1', b'jimmy@programmingblockchain.com test2')
-        private_keys = [PrivateKey(little_endian_to_int(double_sha256(s))) for s in secrets]
+        private_keys = [PrivateKey(little_endian_to_int(hash256(s))) for s in secrets]
         points = [p.point for p in private_keys]
         witness_script = multisig_redeem_script(2, points)
         h256 = witness_script.sha256()

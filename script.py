@@ -4,7 +4,7 @@ from unittest import TestCase
 from ecc import PrivateKey
 
 from helper import (
-    double_sha256,
+    hash256,
     encode_bech32_checksum,
     encode_varint,
     h160_to_p2pkh_address,
@@ -457,7 +457,7 @@ class ScriptTest(TestCase):
 
     def test_address_p2sh_multisig(self):
         secrets = (b'jimmy@programmingblockchain.com test1', b'jimmy@programmingblockchain.com test2')
-        private_keys = [PrivateKey(little_endian_to_int(double_sha256(s))) for s in secrets]
+        private_keys = [PrivateKey(little_endian_to_int(hash256(s))) for s in secrets]
         points = [p.point for p in private_keys]
         redeem_script = multisig_redeem_script(2, points)
         h160 = redeem_script.hash160()
@@ -466,7 +466,7 @@ class ScriptTest(TestCase):
 
     def test_address_p2sh_p2wpkh(self):
         secret = b'jimmy@programmingblockchain.com test1'
-        private_key = PrivateKey(little_endian_to_int(double_sha256(secret)))
+        private_key = PrivateKey(little_endian_to_int(hash256(secret)))
         point = private_key.point
         real_h160 = hash160(point.sec())
         redeem_script = p2wpkh_script(real_h160)
@@ -475,7 +475,7 @@ class ScriptTest(TestCase):
 
     def test_address_p2wpkh(self):
         secret = b'jimmy@programmingblockchain.com test1'
-        private_key = PrivateKey(little_endian_to_int(double_sha256(secret)))
+        private_key = PrivateKey(little_endian_to_int(hash256(secret)))
         point = private_key.point
         h160 = hash160(point.sec())
         script_pubkey = p2wpkh_script(h160)
@@ -483,7 +483,7 @@ class ScriptTest(TestCase):
 
     def test_address_p2wsh(self):
         secrets = (b'jimmy@programmingblockchain.com test1', b'jimmy@programmingblockchain.com test2')
-        private_keys = [PrivateKey(little_endian_to_int(double_sha256(s))) for s in secrets]
+        private_keys = [PrivateKey(little_endian_to_int(hash256(s))) for s in secrets]
         points = [p.point for p in private_keys]
         witness_script = multisig_redeem_script(2, points)
         h256 = witness_script.sha256()
@@ -493,7 +493,7 @@ class ScriptTest(TestCase):
 
     def test_address_p2sh_p2wsh(self):
         secrets = (b'jimmy@programmingblockchain.com test1', b'jimmy@programmingblockchain.com test2')
-        private_keys = [PrivateKey(little_endian_to_int(double_sha256(s))) for s in secrets]
+        private_keys = [PrivateKey(little_endian_to_int(hash256(s))) for s in secrets]
         points = [p.point for p in private_keys]
         witness_script = multisig_redeem_script(2, points)
         h256 = witness_script.sha256()
@@ -504,7 +504,7 @@ class ScriptTest(TestCase):
 
     def test_address_2(self):
         secrets = (b'jimmy@programmingblockchain.com test1', b'jimmy@programmingblockchain.com test2')
-        private_keys = [PrivateKey(little_endian_to_int(double_sha256(s))) for s in secrets]
+        private_keys = [PrivateKey(little_endian_to_int(hash256(s))) for s in secrets]
         points = [p.point for p in private_keys]
         redeem_script = multisig_redeem_script(2, points)
         h160 = redeem_script.hash160()

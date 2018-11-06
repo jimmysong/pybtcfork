@@ -2,7 +2,7 @@ from io import BytesIO
 from unittest import TestCase
 
 from helper import (
-    double_sha256,
+    hash256,
     int_to_little_endian,
     little_endian_to_int,
     merkle_root,
@@ -75,7 +75,7 @@ class Block:
         # serialize
         s = self.serialize()
         # double-sha256
-        sha = double_sha256(s)
+        sha = hash256(s)
         # reverse
         return sha[::-1]
 
@@ -117,8 +117,8 @@ class Block:
 
     def check_pow(self):
         '''Returns whether this block satisfies proof of work'''
-        # get the double_sha256 of the serialization of this block
-        sha = double_sha256(self.serialize())
+        # get the hash256 of the serialization of this block
+        sha = hash256(self.serialize())
         # interpret this hash as a little-endian number
         proof = little_endian_to_int(sha)
         # return whether this integer is less than the target
