@@ -720,43 +720,43 @@ class TxTest(TestCase):
         want = int('27e0c5994dec7824e56dec6b2fcb342eb7cdb0d0957c2fce9882f715e85d81a6', 16)
         self.assertEqual(tx.sig_hash(0), want)
 
-    def test_verify_input_p2pkh(self):
+    def test_verify_p2pkh(self):
         tx = TxFetcher.fetch('452c629d67e41baec3ac6f04fe744b4b9617f8f859c63b3002f8684e7a4fee03')
         self.assertTrue(tx.verify())
 
-    def test_verify_input_p2sh(self):
+    def test_verify_p2sh(self):
         tx = TxFetcher.fetch('46df1a9484d0a81d03ce0ee543ab6e1a23ed06175c104a178268fad381216c2b')
         self.assertTrue(tx.verify())
 
-    def test_verify_input_p2wpkh(self):
+    def test_verify_p2wpkh(self):
         tx = TxFetcher.fetch('d869f854e1f8788bcff294cc83b280942a8c728de71eb709a2c29d10bfe21b7c', testnet=True)
         self.assertTrue(tx.verify())
 
-    def test_verify_input_p2sh_p2wpkh(self):
+    def test_verify_p2sh_p2wpkh(self):
         tx = TxFetcher.fetch('c586389e5e4b3acb9d6c8be1c19ae8ab2795397633176f5a6442a261bbdefc3a')
         self.assertTrue(tx.verify())
 
-    def test_verify_input_p2wsh(self):
+    def test_verify_p2wsh(self):
         tx = TxFetcher.fetch('78457666f82c28aa37b74b506745a7c7684dc7842a52a457b09f09446721e11c', testnet=True)
         self.assertTrue(tx.verify())
 
-    def test_verify_input_p2sh_p2wsh(self):
+    def test_verify_p2sh_p2wsh(self):
         tx = TxFetcher.fetch('954f43dbb30ad8024981c07d1f5eb6c9fd461e2cf1760dd1283f052af746fc88', testnet=True)
         self.assertTrue(tx.verify())
 
-    def test_verify_input_if(self):
+    def test_verify_if(self):
         tx = TxFetcher.fetch('61ba3a8b40706931b72929628cf1a07d604f158c8350055725c664d544d00030', testnet=True)
         self.assertTrue(tx.verify())
 
-    def test_verify_input_cltv(self):
+    def test_verify_cltv(self):
         tx = TxFetcher.fetch('ca2c7347aa2fdff68052f026fa9a092448c2451f774ca53f3a2b05d74405addc', testnet=True)
         self.assertTrue(tx.verify())
 
-    def test_verify_input_csv(self):
+    def test_verify_csv(self):
         tx = TxFetcher.fetch('d208b659eaca2640f732b07b11ea9800c1a0bb4ffdc03aaf82af76c1787570ac', testnet=True)
         self.assertTrue(tx.verify())
 
-    def test_verify_input_csv_2(self):
+    def test_verify_csv_2(self):
         tx = TxFetcher.fetch('807d464fff227ce98cfb5f1292069e2793e99f21b0539a1729cc460af32add77', testnet=True)
         self.assertTrue(tx.verify())
 
