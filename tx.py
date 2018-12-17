@@ -32,14 +32,14 @@ class TxFetcher:
     @classmethod
     def get_url(cls, testnet=False):
         if testnet:
-            return 'http://tbtc.programmingblockchain.com:18332'
+            return 'http://testnet.programmingbitcoin.com'
         else:
-            return 'http://btc.programmingblockchain.com:8332'
+            return 'http://mainnet.programmingbitcoin.com'
 
     @classmethod
     def fetch(cls, tx_id, testnet=False, fresh=False):
         if fresh or (tx_id not in cls.cache):
-            url = '{}/rest/tx/{}.hex'.format(cls.get_url(testnet), tx_id)
+            url = '{}/tx/{}.hex'.format(cls.get_url(testnet), tx_id)
             response = requests.get(url)
             try:
                 raw = bytes.fromhex(response.text.strip())
@@ -72,6 +72,7 @@ class TxFetcher:
 
 
 class Tx:
+    command = b'tx'
 
     def __init__(self, version, tx_ins, tx_outs, locktime, testnet=False, segwit=False):
         self.version = version
@@ -325,9 +326,9 @@ class Tx:
         if witness_script:
             script_code = witness_script.serialize()
         elif redeem_script:
-            script_code = p2pkh_script(redeem_script.items[1]).serialize()
+            script_code = p2pkh_script(redeem_script.instructions[1]).serialize()
         else:
-            script_code = p2pkh_script(tx_in.script_pubkey(self.testnet).items[1]).serialize()
+            script_code = p2pkh_script(tx_in.script_pubkey(self.testnet).instructions[1]).serialize()
         s += script_code
         s += int_to_little_endian(tx_in.value(), 8)
         s += int_to_little_endian(tx_in.sequence, 4)
@@ -344,15 +345,15 @@ class Tx:
         # check to see if the script_pubkey is a p2sh
         if script_pubkey.is_p2sh_script_pubkey():
             # the last element has to be the redeem script to trigger
-            item = tx_in.script_sig.items[-1]
-            raw_redeem = int_to_little_endian(len(item), 1) + item
+            instruction = tx_in.script_sig.instructions[-1]
+            raw_redeem = int_to_little_endian(len(instruction), 1) + instruction
             redeem_script = Script.parse(BytesIO(raw_redeem))
             if redeem_script.is_p2wpkh_script_pubkey():
                 z = self.sig_hash_bip143(input_index, redeem_script)
                 witness = tx_in.witness_program
             elif redeem_script.is_p2wsh_script_pubkey():
-                item = tx_in.witness_program[-1]
-                raw_witness = encode_varint(len(item)) + item
+                instruction = tx_in.witness_program[-1]
+                raw_witness = encode_varint(len(instruction)) + instruction
                 witness_script = Script.parse(BytesIO(raw_witness))
                 z = self.sig_hash_bip143(input_index, witness_script=witness_script)
                 witness = tx_in.witness_program
@@ -364,8 +365,8 @@ class Tx:
                 z = self.sig_hash_bip143(input_index)
                 witness = tx_in.witness_program
             elif script_pubkey.is_p2wsh_script_pubkey():
-                item = tx_in.witness_program[-1]
-                raw_witness = encode_varint(len(item)) + item
+                instruction = tx_in.witness_program[-1]
+                raw_witness = encode_varint(len(instruction)) + instruction
                 witness_script = Script.parse(BytesIO(raw_witness))
                 z = self.sig_hash_bip143(input_index, witness_script=witness_script)
                 witness = tx_in.witness_program
@@ -398,7 +399,7 @@ class Tx:
         sig = der + SIGHASH_ALL.to_bytes(1, 'big')
         # calculate the sec
         sec = private_key.point.sec()
-        # change input's script_sig to a new script with [sig, sec] as the items
+        # change input's script_sig to a new script with [sig, sec] as the instructions
         self.tx_ins[input_index].script_sig = Script([sig, sec])
         # return whether sig is valid using self.verify_input
         return self.verify_input(input_index)
@@ -407,19 +408,19 @@ class Tx:
         '''Signs the input using the private key'''
         # get the sig_hash (z)
         z = self.sig_hash(input_index, redeem_script=redeem_script)
-        # initialize the script_sig items with a 0 (OP_CHECKMULTISIG bug)
-        items = [0]
+        # initialize the script_sig instructions with a 0 (OP_CHECKMULTISIG bug)
+        instructions = [0]
         for private_key in private_keys:
             # get der signature of z from private key
             der = private_key.sign(z).der()
             # append the hash_type to der (use SIGHASH_ALL.to_bytes(1, 'big'))
             sig = der + SIGHASH_ALL.to_bytes(1, 'big')
-            # add the signature to the items
-            items.append(sig)
-        # finally, add the redeem script to the items array
-        items.append(redeem_script.raw_serialize())
-        # change input's script_sig to the Script consisting of the items array
-        self.tx_ins[input_index].script_sig = Script(items)
+            # add the signature to the instructions
+            instructions.append(sig)
+        # finally, add the redeem script to the instructions array
+        instructions.append(redeem_script.raw_serialize())
+        # change input's script_sig to the Script consisting of the instructions array
+        self.tx_ins[input_index].script_sig = Script(instructions)
         # return whether sig is valid using self.verify_input
         return self.verify_input(input_index)
 
@@ -532,9 +533,9 @@ class Tx:
         # get the first byte of the scriptsig, which is the length
         length = script_sig.coinbase[0]
         # get the next length bytes
-        item = script_sig.coinbase[1:1 + length]
+        instruction = script_sig.coinbase[1:1 + length]
         # convert the first element from little endian to int
-        return little_endian_to_int(item)
+        return little_endian_to_int(instruction)
 
 
 class TxIn:

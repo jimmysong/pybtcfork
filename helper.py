@@ -9,6 +9,8 @@ SIGHASH_SINGLE = 3
 BASE58_ALPHABET = b'123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 BECH32_ALPHABET = b'qpzry9x8gf2tvdw0s3jn54khce6mua7l'
 GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
+TWO_WEEKS = 60 * 60 * 24 * 14
+MAX_TARGET = 0xffff * 256**(0x1d - 3)
 
 
 @SkipTest
@@ -241,6 +243,55 @@ def h160_to_p2sh_address(h160, testnet=False):
     return encode_base58_checksum(prefix + h160)
 
 
+def bits_to_target(bits):
+    '''Turns bits into a target (large 256-bit integer)'''
+    # last byte is exponent
+    exponent = bits[-1]
+    # the first three bytes are the coefficient in little endian
+    coefficient = little_endian_to_int(bits[:-1])
+    # the formula is:
+    # coefficient * 256**(exponent-3)
+    return coefficient * 256**(exponent - 3)
+
+
+def target_to_bits(target):
+    '''Turns a target integer back into bits, which is 4 bytes'''
+    raw_bytes = target.to_bytes(32, 'big')
+    # get rid of leading 0's
+    raw_bytes = raw_bytes.lstrip(b'\x00')
+    if raw_bytes[0] > 0x7f:
+        # if the first bit is 1, we have to start with 00
+        exponent = len(raw_bytes) + 1
+        coefficient = b'\x00' + raw_bytes[:2]
+    else:
+        # otherwise, we can show the first 3 bytes
+        # exponent is the number of digits in base-256
+        exponent = len(raw_bytes)
+        # coefficient is the first 3 digits of the base-256 number
+        coefficient = raw_bytes[:3]
+    # we've truncated the number after the first 3 digits of base-256
+    new_bits = coefficient[::-1] + bytes([exponent])
+    return new_bits
+
+
+def calculate_new_bits(previous_bits, time_differential):
+    '''Calculates the new bits given
+    a 2016-block time differential and the previous bits'''
+    # if the time differential is greater than 8 weeks, set to 8 weeks
+    if time_differential > TWO_WEEKS * 4:
+        time_differential = TWO_WEEKS * 4
+    # if the time differential is less than half a week, set to half a week
+    if time_differential < TWO_WEEKS // 4:
+        time_differential = TWO_WEEKS // 4
+    # the new target is the previous target * time differential / two weeks
+    new_target = bits_to_target(previous_bits) * time_differential // TWO_WEEKS
+    # if the new target is bigger than MAX_TARGET, set to MAX_TARGET
+    if new_target > MAX_TARGET:
+        new_target = MAX_TARGET
+    # convert the new target to bits
+    return target_to_bits(new_target)
+
+
 def merkle_parent(hash1, hash2):
     '''Takes the binary hashes and calculates the double-sha256'''
     # return the double-sha256 of hash1 + hash2
@@ -414,6 +465,12 @@ class HelperTest(TestCase):
         self.assertEqual(h160_to_p2sh_address(h160, testnet=False), want)
         want = '2N3u1R6uwQfuobCqbCgBkpsgBxvr1tZpe7B'
         self.assertEqual(h160_to_p2sh_address(h160, testnet=True), want)
+
+    def test_calculate_new_bits(self):
+        prev_bits = bytes.fromhex('54d80118')
+        time_differential = 302400
+        want = bytes.fromhex('00157617')
+        self.assertEqual(calculate_new_bits(prev_bits, time_differential), want)
 
     def test_merkle_parent(self):
         tx_hash0 = bytes.fromhex('c117ea8ec828342f4dfb0ad6bd140e03a50720ece40169ee38bdc15d9eb64cf5')

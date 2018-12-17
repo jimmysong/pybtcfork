@@ -6,13 +6,18 @@ from random import randint
 from unittest import TestCase
 
 from block import Block
+from ecc import PrivateKey
 from helper import (
-    hash256,
+    decode_base58,
     encode_varint,
+    hash256,
     int_to_little_endian,
     little_endian_to_int,
     read_varint,
 )
+from merkleblock import MerkleBlock
+from script import p2pkh_script, Script
+from tx import Tx, TxIn, TxOut
 
 TX_DATA_TYPE = 1
 BLOCK_DATA_TYPE = 2
@@ -58,7 +63,7 @@ class NetworkEnvelope:
         command = command.strip(b'\x00')
         # payload length 4 bytes, little endian
         payload_length = little_endian_to_int(s.read(4))
-        # checksum 4 bytes, first four of double-sha256 of payload
+        # checksum 4 bytes, first four of hash256 of payload
         checksum = s.read(4)
         # payload is of length payload_length
         payload = s.read(payload_length)
@@ -66,6 +71,7 @@ class NetworkEnvelope:
         calculated_checksum = hash256(payload)[:4]
         if calculated_checksum != checksum:
             raise RuntimeError('checksum does not match')
+        # return an instance of the class
         return cls(command, payload, testnet=testnet)
 
     def serialize(self):
@@ -77,7 +83,7 @@ class NetworkEnvelope:
         result += self.command + b'\x00' * (12 - len(self.command))
         # payload length 4 bytes, little endian
         result += int_to_little_endian(len(self.payload), 4)
-        # checksum 4 bytes, first four of double-sha256 of payload
+        # checksum 4 bytes, first four of hash256 of payload
         result += hash256(self.payload)[:4]
         # payload
         result += self.payload
@@ -121,7 +127,7 @@ class VersionMessage:
                  receiver_ip=b'\x00\x00\x00\x00', receiver_port=8333,
                  sender_services=0,
                  sender_ip=b'\x00\x00\x00\x00', sender_port=8333,
-                 nonce=None, user_agent=b'/programmingblockchain:0.1/',
+                 nonce=None, user_agent=b'/programmingbitcoin:0.1/',
                  latest_block=0, relay=True):
         self.version = version
         self.services = services
@@ -182,7 +188,51 @@ class VersionMessageTest(TestCase):
 
     def test_serialize(self):
         v = VersionMessage(timestamp=0, nonce=b'\x00' * 8)
-        self.assertEqual(v.serialize().hex(), '7f11010000000000000000000000000000000000000000000000000000000000000000000000ffff000000008d20000000000000000000000000000000000000ffff000000008d2000000000000000001b2f70726f6772616d6d696e67626c6f636b636861696e3a302e312f0000000001')
+        print(v.serialize().hex())
+        self.assertEqual(v.serialize().hex(), '7f11010000000000000000000000000000000000000000000000000000000000000000000000ffff000000008d20000000000000000000000000000000000000ffff000000008d200000000000000000182f70726f6772616d6d696e67626974636f696e3a302e312f0000000001')
+
+
+class VerAckMessage:
+    command = b'verack'
+
+    def __init__(self):
+        pass
+
+    @classmethod
+    def parse(cls, s):
+        return cls()
+
+    def serialize(self):
+        return b''
+
+
+class PingMessage:
+    command = b'ping'
+
+    def __init__(self, nonce):
+        self.nonce = nonce
+
+    @classmethod
+    def parse(cls, s):
+        nonce = s.read(8)
+        return cls(nonce)
+
+    def serialize(self):
+        return self.nonce
+
+
+class PongMessage:
+    command = b'pong'
+
+    def __init__(self, nonce):
+        self.nonce = nonce
+
+    def parse(cls, s):
+        nonce = s.read(8)
+        return cls(nonce)
+
+    def serialize(self):
+        return self.nonce
 
 
 class GetHeadersMessage:
@@ -268,10 +318,11 @@ class GetDataMessage:
     def serialize(self):
         # start with the number of items as a varint
         result = encode_varint(len(self.data))
+        # loop through each tuple (data_type, identifier) in self.data
         for data_type, identifier in self.data:
-            # data type is 4 bytes little endian
+            # data type is 4 bytes Little-Endian
             result += int_to_little_endian(data_type, 4)
-            # identifier needs to be in little endian
+            # identifier needs to be in Little-Endian
             result += identifier[::-1]
         return result
 
@@ -286,6 +337,15 @@ class GetDataMessageTest(TestCase):
         block2 = bytes.fromhex('00000000000000beb88910c46f6b442312361c6693a7fb52065b583979844910')
         get_data.add_data(FILTERED_BLOCK_DATA_TYPE, block2)
         self.assertEqual(get_data.serialize().hex(), hex_msg)
+
+
+class GenericMessage:
+    def __init__(self, command, payload):
+        self.command = command
+        self.payload = payload
+
+    def serialize(self):
+        return self.payload
 
 
 class SimpleNode:
@@ -305,18 +365,20 @@ class SimpleNode:
         self.stream = self.socket.makefile('rb', None)
 
     def handshake(self):
-        '''Do a handshake with the other node. Handshake is sending a version message and getting a verack back.'''
+        '''Do a handshake with the other node.
+        Handshake is sending a version message and getting a verack back.'''
         # create a version message
         version = VersionMessage()
         # send the command
-        self.send(version.command, version.serialize())
+        self.send(version)
         # wait for a verack message
-        self.wait_for_commands({b'verack'})
+        self.wait_for(VerAckMessage)
 
-    def send(self, command, payload):
+    def send(self, message):
         '''Send a message to the connected node'''
         # create a network envelope
-        envelope = NetworkEnvelope(command, payload, testnet=self.testnet)
+        envelope = NetworkEnvelope(
+            message.command, message.serialize(), testnet=self.testnet)
         if self.logging:
             print('sending: {}'.format(envelope))
         # send the serialized envelope over the socket using sendall
@@ -329,25 +391,26 @@ class SimpleNode:
             print('receiving: {}'.format(envelope))
         return envelope
 
-    def wait_for_commands(self, commands):
-        '''Wait for one of the commands in the list'''
+    def wait_for(self, *message_classes):
+        '''Wait for one of the messages in the list'''
         # initialize the command we have, which should be None
         command = None
+        command_to_class = {m.command: m for m in message_classes}
         # loop until the command is in the commands we want
-        while command not in commands:
+        while command not in command_to_class.keys():
             # get the next network message
             envelope = self.read()
             # set the command to be evaluated
             command = envelope.command
             # we know how to respond to version and ping, handle that here
-            if command == b'version':
+            if command == VersionMessage.command:
                 # send verack
-                self.send(b'verack', b'')
-            elif command == b'ping':
+                self.send(VerAckMessage())
+            elif command == PingMessage.command:
                 # send pong
-                self.send(b'pong', envelope.payload)
-        # return the last envelope we got
-        return envelope
+                self.send(PongMessage(envelope.payload))
+        # return the envelope parsed as a member of the right message class
+        return command_to_class[command].parse(envelope.stream())
 
 
 class SimpleNodeTest(TestCase):
@@ -355,3 +418,108 @@ class SimpleNodeTest(TestCase):
     def test_handshake(self):
         node = SimpleNode('tbtc.programmingblockchain.com', testnet=True)
         node.handshake()
+
+
+class IntegrationTest(TestCase):
+
+    def test_broadcast(self):
+        from bloomfilter import BloomFilter
+        last_block_hex = '00000000000000a03f9432ac63813c6710bfe41712ac5ef6faab093fe2917636'
+        secret = little_endian_to_int(hash256(b'Jimmy Song'))
+        private_key = PrivateKey(secret=secret)
+        addr = private_key.point.address(testnet=True)
+        h160 = decode_base58(addr)
+        target_address = 'mwJn1YPMq7y5F8J3LkC5Hxg9PHyZ5K4cFv'
+        target_h160 = decode_base58(target_address)
+        target_script = p2pkh_script(target_h160)
+        fee = 5000  # fee in satoshis
+        # connect to tbtc.programmingblockchain.com in testnet mode
+        node = SimpleNode('tbtc.programmingblockchain.com', testnet=True, logging=\
+        False)
+        # create a bloom filter of size 30 and 5 functions. Add a tweak.
+        bf = BloomFilter(30, 5, 90210)
+        # add the h160 to the bloom filter
+        bf.add(h160)
+        # complete the handshake
+        node.handshake()
+        # load the bloom filter with the filterload command
+        node.send(bf.filterload())
+        # set start block to last_block from above
+        start_block = bytes.fromhex(last_block_hex)
+        # send a getheaders message with the starting block
+        getheaders = GetHeadersMessage(start_block=start_block)
+        node.send(getheaders)
+        # wait for the headers message
+        headers = node.wait_for(HeadersMessage)
+        # store the last block as None
+        last_block = None
+        # initialize the GetDataMessage
+        getdata = GetDataMessage()
+        # loop through the blocks in the headers
+        for b in headers.blocks:
+            # check that the proof of work on the block is valid
+            if not b.check_pow():
+                raise RuntimeError('proof of work is invalid')
+            # check that this block's prev_block is the last block
+            if last_block is not None and b.prev_block != last_block:
+                raise RuntimeError('chain broken')
+            # add a new item to the getdata message
+            # should be FILTERED_BLOCK_DATA_TYPE and block hash
+            getdata.add_data(FILTERED_BLOCK_DATA_TYPE, b.hash())
+            # set the last block to the current hash
+            last_block = b.hash()
+        # send the getdata message
+        node.send(getdata)
+        # initialize prev_tx, prev_index and prev_amount to None
+        prev_tx, prev_index, prev_amount = None, None, None
+        # loop while prev_tx is None
+        while prev_tx is None:
+            # wait for the merkleblock or tx commands
+            message = node.wait_for(MerkleBlock, Tx)
+            # if we have the merkleblock command
+            if message.command == b'merkleblock':
+                # check that the MerkleBlock is valid
+                if not message.is_valid():
+                    raise RuntimeError('invalid merkle proof')
+            # else we have the tx command
+            else:
+                # set the tx's testnet to be True
+                message.testnet = True
+                # loop through the tx outs
+                for i, tx_out in enumerate(message.tx_outs):
+                    # if our output has the same address as our address we found it
+                    if tx_out.script_pubkey.address(testnet=True) == addr:
+                        # we found our utxo. set prev_tx, prev_index, and tx
+                        prev_tx = message.hash()
+                        prev_index = i
+                        prev_amount = tx_out.amount
+                        self.assertEqual(prev_tx.hex(), 'b2cddd41d18d00910f88c31aa58c6816a190b8fc30fe7c665e1cd2ec60efdf3f')
+                        self.assertEqual(prev_index, 7)
+        # create the TxIn
+        tx_in = TxIn(prev_tx, prev_index)
+        # calculate the output amount (previous amount minus the fee)
+        output_amount = prev_amount - fee
+        # create a new TxOut to the target script with the output amount
+        tx_out = TxOut(output_amount, target_script)
+        # create a new transaction with the one input and one output
+        tx_obj = Tx(1, [tx_in], [tx_out], 0, testnet=True)
+        # sign the only input of the transaction
+        self.assertTrue(tx_obj.sign_input_p2pkh(0, private_key))
+        # serialize and hex to see what it looks like
+        want = '01000000013fdfef60ecd21c5e667cfe30fcb890a116688ca51ac3880f91008dd141ddcdb2070000006b483045022100ff77d2559261df5490ed00d231099c4b8ea867e6ccfe8e3e6d077313ed4f1428022033a1db8d69eb0dc376f89684d1ed1be75719888090388a16f1e8eedeb8067768012103dc585d46cfca73f3a75ba1ef0c5756a21c1924587480700c6eb64e3f75d22083ffffffff019334e500000000001976a914ad346f8eb57dee9a37981716e498120ae80e44f788ac00000000'
+        self.assertEqual(tx_obj.serialize().hex(), want)
+        # send this signed transaction on the network
+        node.send(tx_obj)
+        # wait a sec so this message goes through with time.sleep(1)
+        time.sleep(1)
+        # now ask for this transaction from the other node
+        # create a GetDataMessage
+        getdata = GetDataMessage()
+        # ask for our transaction by adding it to the message
+        getdata.add_data(TX_DATA_TYPE, tx_obj.hash())
+        # send the message
+        node.send(getdata)
+        # now wait for a Tx response
+        received_tx = node.wait_for(Tx)
+        # if the received tx has the same id as our tx, we are done!
+        self.assertEqual(received_tx.id(), tx_obj.id())

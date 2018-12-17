@@ -33,16 +33,20 @@ class MerkleTree:
         self.current_index = 0
 
     def __repr__(self):
-        result = ''
+        result = []
         for depth, level in enumerate(self.nodes):
+            items = []
             for index, h in enumerate(level):
-                short = '{}...'.format(h.hex()[:8])
-                if depth == self.current_depth and index == self.current_index:
-                    result += '*{}*, '.format(short[:-2])
+                if h is None:
+                    short = 'None'
                 else:
-                    result += '{}, '.format(short)
-            result += '\n'
-        return result
+                    short = '{}...'.format(h.hex()[:8])
+                if depth == self.current_depth and index == self.current_index:
+                    items.append('*{}*'.format(short[:-2]))
+                else:
+                    items.append('{}'.format(short))
+            result.append(', '.join(items))
+        return '\n'.join(result)
 
     def up(self):
         # reduce depth by 1 and halve the index
@@ -91,11 +95,9 @@ class MerkleTree:
                 self.set_current_node(hashes.pop(0))
                 # go up a level
                 self.up()
-            # else
             else:
                 # get the left hash
                 left_hash = self.get_left_node()
-                # Exercise 6.2: get the right hash
                 # if we don't have the left hash
                 if left_hash is None:
                     # if the next flag bit is 0, the next hash is our current node
@@ -104,16 +106,9 @@ class MerkleTree:
                         self.set_current_node(hashes.pop(0))
                         # sub-tree doesn't need calculation, go up
                         self.up()
-                    # else
                     else:
                         # go to the left node
                         self.left()
-                # Exercise 6.2: if we don't have the right hash
-                    # go to the right node
-                # Exercise 6.2: else
-                    # combine the left and right hashes
-                    # we've completed this subtree, go up
-                # Exercise 7.2: if the right hash exists
                 elif self.right_exists():
                     # get the right hash
                     right_hash = self.get_right_node()
@@ -121,13 +116,11 @@ class MerkleTree:
                     if right_hash is None:
                         # go to the right node
                         self.right()
-                    # else
                     else:
                         # combine the left and right hashes
                         self.set_current_node(merkle_parent(left_hash, right_hash))
                         # we've completed this sub-tree, go up
                         self.up()
-                # else
                 else:
                     # combine the left hash twice
                     self.set_current_node(merkle_parent(left_hash, left_hash))
@@ -191,6 +184,7 @@ class MerkleTreeTest(TestCase):
 
 
 class MerkleBlock:
+    command = b'merkleblock'
 
     def __init__(self, version, prev_block, merkle_root, timestamp, bits, nonce, total, hashes, flags):
         self.version = version
@@ -212,30 +206,27 @@ class MerkleBlock:
     @classmethod
     def parse(cls, s):
         '''Takes a byte stream and parses a merkle block. Returns a Merkle Block object'''
-        # s.read(n) will read n bytes from the stream
-        # version - 4 bytes, little endian, interpret as int
+        # version - 4 bytes, Little-Endian integer
         version = little_endian_to_int(s.read(4))
-        # prev_block - 32 bytes, little endian (use [::-1] to reverse)
+        # prev_block - 32 bytes, Little-Endian (use [::-1])
         prev_block = s.read(32)[::-1]
-        # merkle_root - 32 bytes, little endian (use [::-1] to reverse)
+        # merkle_root - 32 bytes, Little-Endian (use [::-1])
         merkle_root = s.read(32)[::-1]
-        # timestamp - 4 bytes, little endian, interpret as int
+        # timestamp - 4 bytes, Little-Endian integer
         timestamp = little_endian_to_int(s.read(4))
         # bits - 4 bytes
         bits = s.read(4)
         # nonce - 4 bytes
         nonce = s.read(4)
-        # total number of transactions (4 bytes, little endian)
+        # total transactions in block - 4 bytes, Little-Endian integer
         total = little_endian_to_int(s.read(4))
-        # number of hashes is a varint
+        # number of transaction hashes - varint
         num_txs = read_varint(s)
-        # initialize the hashes array
+        # each transaction is 32 bytes, Little-Endian
         hashes = []
-        # loop through the number of hashes times
         for _ in range(num_txs):
-            # each hash is 32 bytes, little endian
             hashes.append(s.read(32)[::-1])
-        # get the length of the flags field as a varint
+        # length of flags field - varint
         flags_length = read_varint(s)
         # read the flags field
         flags = s.read(flags_length)
@@ -245,15 +236,15 @@ class MerkleBlock:
 
     def is_valid(self):
         '''Verifies whether the merkle tree information validates to the merkle root'''
-        # convert the flags field to a bit field using bytes_to_bit_field
+        # convert the flags field to a bit field
         flag_bits = bytes_to_bit_field(self.flags)
-        # reverse the hashes to get our list of hashes for merkle root calculation
+        # reverse self.hashes for the merkle root calculation
         hashes = [h[::-1] for h in self.hashes]
         # initialize the merkle tree
         merkle_tree = MerkleTree(self.total)
         # populate the tree with flag bits and hashes
         merkle_tree.populate_tree(flag_bits, hashes)
-        # check if the computed root [::-1] is the same as the merkle root
+        # check if the computed root reversed is the same as the merkle root
         return merkle_tree.root()[::-1] == self.merkle_root
 
 

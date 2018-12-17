@@ -1,8 +1,20 @@
 import hashlib
 
+from logging import getLogger
 from unittest import TestCase
 
-from ecc import S256Point, Signature
+from ecc import (
+    S256Point,
+    Signature,
+)
+
+from helper import (
+    hash160,
+    hash256,
+)
+
+
+LOGGER = getLogger(__name__)
 
 
 def encode_num(num):
@@ -15,8 +27,8 @@ def encode_num(num):
         result.append(abs_num & 0xff)
         abs_num >>= 8
     # if the top bit is set,
-    # for negative numbers we ensure that the top bit is set by adding 0x80
-    # for positive numbers we ensure that the top bit is not set by adding 0x00
+    # for negative numbers we ensure that the top bit is set
+    # for positive numbers we ensure that the top bit is not set
     if result[-1] & 0x80:
         if negative:
             result.append(0x80)
@@ -628,10 +640,13 @@ def op_sha256(stack):
 
 
 def op_hash160(stack):
+    # check that there's at least 1 element on the stack
     if len(stack) < 1:
         return False
+    # pop off the top element from the stack
     element = stack.pop()
-    h160 = hashlib.new('ripemd160', hashlib.sha256(element).digest()).digest()
+    # push a hash160 of the popped off element to the stack
+    h160 = hash160(element)
     stack.append(h160)
     return True
 
@@ -640,22 +655,28 @@ def op_hash256(stack):
     if len(stack) < 1:
         return False
     element = stack.pop()
-    stack.append(hashlib.sha256(hashlib.sha256(element).digest()).digest())
+    stack.append(hash256(element))
     return True
 
 
 def op_checksig(stack, z):
+    # check that there are at least 2 elements on the stack
     if len(stack) < 2:
         return False
+    # the top element of the stack is the SEC pubkey
     sec_pubkey = stack.pop()
-    # signature is assumed to be using SIGHASH_ALL
+    # the next element of the stack is the DER signature
+    # take off the last byte of the signature as that's the hash_type
     der_signature = stack.pop()[:-1]
+    # parse the serialized pubkey and signature into objects
     try:
         point = S256Point.parse(sec_pubkey)
         sig = Signature.parse(der_signature)
-    except (ValueError, RuntimeError) as e:
-        print(e)
+    except (ValueError, SyntaxError) as e:
+        LOGGER.info(e)
         return False
+    # verify the signature using S256Point.verify()
+    # push an encoded 1 or 0 depending on whether the signature verified
     if point.verify(z, sig):
         stack.append(encode_num(1))
     else:
@@ -686,24 +707,26 @@ def op_checkmultisig(stack, z):
     # OP_CHECKMULTISIG bug
     stack.pop()
     try:
+        # parse all the points
         points = [S256Point.parse(sec) for sec in sec_pubkeys]
+        # parse all the signatures
         sigs = [Signature.parse(der) for der in der_signatures]
+        # loop through the signatures
         for sig in sigs:
-            # find the point that this was signed by
-            signing_point = None
-            for point in points:
-                if point.verify(z, sig):
-                    signing_point = point
-                    break
-            if signing_point:
-                # remove the point since it's been used
-                points.remove(signing_point)
-            else:
-                # did not find a point that signed it
-                print('no point found for sig {}'.format(sig.der().hex()))
+            # if we have no more points, signatures are no good
+            if len(points) == 0:
+                LOGGER.info("signatures no good or not in right order")
                 return False
+            # we loop until we find the point which works with this signature
+            while points:
+                # get the current point from the list of points
+                point = points.pop(0)
+                # we check if this signature goes with the current point
+                if point.verify(z, sig):
+                    break
+        # the signatures are valid, so push a 1 to the stack
         stack.append(encode_num(1))
-    except (ValueError, RuntimeError):
+    except (ValueError, SyntaxError):
         return False
     return True
 
@@ -745,6 +768,110 @@ def op_checksequenceverify(stack, version, sequence):
         elif element & 0xffff > sequence & 0xffff:
             return False
     return True
+
+
+class OpTest(TestCase):
+
+    def test_op_hash160(self):
+        stack = [b'hello world']
+        self.assertTrue(op_hash160(stack))
+        self.assertEqual(
+            stack[0].hex(),
+            'd7d5ee7824ff93f94c3055af9382c86c68b5ca92')
+
+    def test_op_checksig(self):
+        z = 0x7c076ff316692a3d7eb3c3bb0f8b1488cf72e1afcd929e29307032997a838a3d
+        sec = bytes.fromhex('04887387e452b8eacc4acfde10d9aaf7f6d9a0f975aabb10d006e4da568744d06c61de6d95231cd89026e286df3b6ae4a894a3378e393e93a0f45b666329a0ae34')
+        sig = bytes.fromhex('3045022000eff69ef2b1bd93a66ed5219add4fb51e11a840f404876325a1e8ffe0529a2c022100c7207fee197d27c618aea621406f6bf5ef6fca38681d82b2f06fddbdce6feab601')
+        stack = [sig, sec]
+        self.assertTrue(op_checksig(stack, z))
+        self.assertEqual(decode_num(stack[0]), 1)
+
+    def test_op_checkmultisig(self):
+        z = 0xe71bfa115715d6fd33796948126f40a8cdd39f187e4afb03896795189fe1423c
+        sig1 = bytes.fromhex('3045022100dc92655fe37036f47756db8102e0d7d5e28b3beb83a8fef4f5dc0559bddfb94e02205a36d4e4e6c7fcd16658c50783e00c341609977aed3ad00937bf4ee942a8993701')
+        sig2 = bytes.fromhex('3045022100da6bee3c93766232079a01639d07fa869598749729ae323eab8eef53577d611b02207bef15429dcadce2121ea07f233115c6f09034c0be68db99980b9a6c5e75402201')
+        sec1 = bytes.fromhex('022626e955ea6ea6d98850c994f9107b036b1334f18ca8830bfff1295d21cfdb70')
+        sec2 = bytes.fromhex('03b287eaf122eea69030a0e9feed096bed8045c8b98bec453e1ffac7fbdbd4bb71')
+        stack = [b'', sig1, sig2, b'\x02', sec1, sec2, b'\x02']
+        self.assertTrue(op_checkmultisig(stack, z))
+        self.assertEqual(decode_num(stack[0]), 1)
+
+    def test_argument_stack(self):
+        test_cases = (
+            (op_verify, 1),
+            (op_2drop, 2),
+            (op_2dup, 2),
+            (op_3dup, 3),
+            (op_2over, 4),
+            (op_2rot, 6),
+            (op_2swap, 4),
+            (op_ifdup, 1),
+            (op_drop, 1),
+            (op_dup, 1),
+            (op_nip, 2),
+            (op_over, 2),
+            (op_pick, 1),
+            (op_roll, 1),
+            (op_rot, 3),
+            (op_swap, 2),
+            (op_tuck, 2),
+            (op_size, 1),
+            (op_equal, 2),
+            (op_equalverify, 2),
+            (op_1add, 1),
+            (op_1sub, 1),
+            (op_negate, 1),
+            (op_abs, 1),
+            (op_not, 1),
+            (op_0notequal, 1),
+            (op_add, 2),
+            (op_sub, 2),
+            (op_booland, 2),
+            (op_boolor, 2),
+            (op_numequal, 2),
+            (op_numequalverify, 2),
+            (op_numnotequal, 2),
+            (op_lessthan, 2),
+            (op_greaterthan, 2),
+            (op_lessthanorequal, 2),
+            (op_greaterthanorequal, 2),
+            (op_min, 2),
+            (op_max, 2),
+            (op_within, 3),
+            (op_ripemd160, 1),
+            (op_sha1, 1),
+            (op_sha256, 1),
+            (op_hash160, 1),
+            (op_hash256, 1),
+        )
+        for func, num_items in test_cases:
+            self.assertFalse(func([0] * (num_items - 1)))
+
+    def test_ifs(self):
+        test_cases = (op_if, op_notif)
+        for func in test_cases:
+            self.assertFalse(func([], []))
+
+    def test_altstack(self):
+        self.assertFalse(op_toaltstack([], []))
+        self.assertFalse(op_fromaltstack([], []))
+
+    def test_sig(self):
+        test_cases = (
+            (op_checksig, 2),
+            (op_checksigverify, 2),
+            (op_checkmultisig, 1),
+            (op_checkmultisigverify, 1),
+        )
+        for func, num_items in test_cases:
+            self.assertFalse(func([0] * (num_items - 1), 0))
+
+    def test_cltv(self):
+        self.assertFalse(op_checklocktimeverify([], 0, 0))
+
+    def test_csv(self):
+        self.assertFalse(op_checksequenceverify([], 0, 0))
 
 
 OP_CODE_FUNCTIONS = {
@@ -818,7 +945,6 @@ OP_CODE_FUNCTIONS = {
     168: op_sha256,
     169: op_hash160,
     170: op_hash256,
-    #    171: op_codeseparator,
     172: op_checksig,
     173: op_checksigverify,
     174: op_checkmultisig,
@@ -927,82 +1053,3 @@ OP_CODE_NAMES = {
     184: 'OP_NOP9',
     185: 'OP_NOP10',
 }
-
-
-class OpTest(TestCase):
-
-    def test_argument_stack(self):
-        test_cases = (
-            (op_verify, 1),
-            (op_2drop, 2),
-            (op_2dup, 2),
-            (op_3dup, 3),
-            (op_2over, 4),
-            (op_2rot, 6),
-            (op_2swap, 4),
-            (op_ifdup, 1),
-            (op_drop, 1),
-            (op_dup, 1),
-            (op_nip, 2),
-            (op_over, 2),
-            (op_pick, 1),
-            (op_roll, 1),
-            (op_rot, 3),
-            (op_swap, 2),
-            (op_tuck, 2),
-            (op_size, 1),
-            (op_equal, 2),
-            (op_equalverify, 2),
-            (op_1add, 1),
-            (op_1sub, 1),
-            (op_negate, 1),
-            (op_abs, 1),
-            (op_not, 1),
-            (op_0notequal, 1),
-            (op_add, 2),
-            (op_sub, 2),
-            (op_booland, 2),
-            (op_boolor, 2),
-            (op_numequal, 2),
-            (op_numequalverify, 2),
-            (op_numnotequal, 2),
-            (op_lessthan, 2),
-            (op_greaterthan, 2),
-            (op_lessthanorequal, 2),
-            (op_greaterthanorequal, 2),
-            (op_min, 2),
-            (op_max, 2),
-            (op_within, 3),
-            (op_ripemd160, 1),
-            (op_sha1, 1),
-            (op_sha256, 1),
-            (op_hash160, 1),
-            (op_hash256, 1),
-        )
-        for func, num_items in test_cases:
-            self.assertFalse(func([0] * (num_items - 1)))
-
-    def test_ifs(self):
-        test_cases = (op_if, op_notif)
-        for func in test_cases:
-            self.assertFalse(func([], []))
-
-    def test_altstack(self):
-        self.assertFalse(op_toaltstack([], []))
-        self.assertFalse(op_fromaltstack([], []))
-
-    def test_sig(self):
-        test_cases = (
-            (op_checksig, 2),
-            (op_checksigverify, 2),
-            (op_checkmultisig, 1),
-            (op_checkmultisigverify, 1),
-        )
-        for func, num_items in test_cases:
-            self.assertFalse(func([0] * (num_items - 1), 0))
-
-    def test_cltv(self):
-        self.assertFalse(op_checklocktimeverify([], 0, 0))
-
-    def test_csv(self):
-        self.assertFalse(op_checksequenceverify([], 0, 0))
