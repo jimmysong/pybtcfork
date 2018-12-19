@@ -401,6 +401,9 @@ class Script:
             # convert to bech32 address using encode_bech32_checksum
             return encode_bech32_checksum(witness_program, prefix=prefix)
 
+    def has_op_return(self):
+        return 106 in self.instructions
+
 
 class ScriptTest(TestCase):
 

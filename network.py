@@ -286,11 +286,6 @@ class HeadersMessage:
         for _ in range(num_headers):
             # add a block to the blocks array by parsing the stream
             blocks.append(Block.parse(stream))
-            # read the next varint (num_txs)
-            num_txs = read_varint(stream)
-            # num_txs should be 0 or raise a RuntimeError
-            if num_txs != 0:
-                raise RuntimeError('number of txs not 0')
         # return a class instance
         return cls(blocks)
 
@@ -337,6 +332,40 @@ class GetDataMessageTest(TestCase):
         block2 = bytes.fromhex('00000000000000beb88910c46f6b442312361c6693a7fb52065b583979844910')
         get_data.add_data(FILTERED_BLOCK_DATA_TYPE, block2)
         self.assertEqual(get_data.serialize().hex(), hex_msg)
+
+
+class GetCFiltersMessage:
+    command = b'getcfilters'
+
+    def __init__(self, filter_type=0, start_height=1, stop_hash=None):
+        self.filter_type = filter_type
+        self.start_height = start_height
+        if stop_hash is None:
+            raise RuntimeError
+        self.stop_hash = stop_hash
+
+    def serialize(self):
+        result = self.filter_type.to_bytes(1, 'big')
+        result += self.start_height.to_bytes(4, 'big')
+        result += self.stop_hash
+        return result
+
+
+class CFilterMessage:
+    command = b'cfilter'
+
+    def __init__(self, filter_type, block_hash, filter_bytes):
+        self.filter_type = filter_type
+        self.block_hash = block_hash
+        self.filter_bytes = filter_bytes
+
+    @classmethod
+    def parse(cls, s):
+        filter_type = s.read(1)[0]
+        block_hash = s.read(32)[::-1]
+        num_bytes = read_varint(s)
+        filter_bytes = s.read(num_bytes)
+        return cls(filter_type, block_hash, filter_bytes)
 
 
 class GenericMessage:
